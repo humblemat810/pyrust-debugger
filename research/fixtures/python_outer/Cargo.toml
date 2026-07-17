@@ -1,0 +1,16 @@
+[package]
+name = "pyrust-native"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "pyrust_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29.0", features = ["extension-module"] }
+
+[profile.dev]
+opt-level = 0
+debug = 2
+strip = false

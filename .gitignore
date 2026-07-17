@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+
+# Rust and Python build products
+target/
+dist/
+build/
+*.egg-info/
+.maturin/
+
+# Test and debugger artifacts
+.pytest_cache/
+core
+core.*
+research/results/*.json

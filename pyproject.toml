@@ -1,0 +1,7 @@
+[project]
+name = "pyrust-debugger"
+version = "0.0.1"
+requires-python = ">=3.14,<3.15"
+
+[tool.uv]
+package = false
