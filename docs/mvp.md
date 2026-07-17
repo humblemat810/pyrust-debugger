@@ -1,5 +1,13 @@
 # MVP Plan
 
+## Relationship to the First Workable Slice
+
+This document describes the stack-only Linux alpha. The smaller unattended
+two-to-three-day proof is governed by
+[ADR 0002](decisions/0002-72-hour-first-workable-slice.md) and its
+[acceptance criteria](acceptance/first-workable-slice.md). That proof is
+fixture-bound and does not replace the broader alpha milestones below.
+
 ## Goal
 
 At a breakpoint inside a Rust function called from Python, VS Code shows:

@@ -5,6 +5,7 @@
 - [Overall analysis report](analysis-report.md)
 - [Architecture](architecture.md)
 - [ADR 0001: Python-outer first](decisions/0001-python-outer-first.md)
+- [ADR 0002: 72-hour first workable slice](decisions/0002-72-hour-first-workable-slice.md)
 - [Feasibility summary](feasibility.md)
 
 ## Research reports
@@ -21,6 +22,7 @@
 
 - [Project plan](project-plan.md)
 - [MVP details](mvp.md)
+- [First workable slice acceptance](acceptance/first-workable-slice.md)
 - [Test strategy](test-plan.md)
 - [Risk register](risk-register.md)
 
