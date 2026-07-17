@@ -1,5 +1,21 @@
 """Read Python 3.14 stacks from a stopped debuggee."""
 
-from .unwinder import Frame, ThreadStack, read_python_stacks
+from .unwinder import (
+    ERROR_MESSAGES,
+    Frame,
+    StackReadError,
+    ThreadStack,
+    failure_payload,
+    read_python_stacks,
+    success_payload,
+)
 
-__all__ = ["Frame", "ThreadStack", "read_python_stacks"]
+__all__ = [
+    "ERROR_MESSAGES",
+    "Frame",
+    "StackReadError",
+    "ThreadStack",
+    "failure_payload",
+    "read_python_stacks",
+    "success_payload",
+]

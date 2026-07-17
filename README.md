@@ -69,3 +69,16 @@ Run the prototype tests with:
 PYTHONPATH=prototype/python \
   .venv/bin/python -m unittest discover -s prototype/python/tests -v
 ```
+
+## First workable slice
+
+The fixture-bound DAP proof is implemented under `prototype/adapter`. Run its
+complete automated contract, including the real CodeLLDB integration, with:
+
+```bash
+./scripts/accept-first-slice.sh
+```
+
+The command must report `PASS` for `AC-HP-01` through `AC-SP-04`. This slice is
+limited to the documented CPython 3.14, Linux, single-thread Python-to-Rust
+fixture; it is not yet a packaged VS Code extension.
