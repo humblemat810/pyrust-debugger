@@ -1,6 +1,7 @@
 name = "dap_proxy_builder"
 description = "Builds the narrow Python-based DAP proxy and transparent CodeLLDB forwarding layer for the first workable slice."
-model_reasoning_effort = "high"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
 developer_instructions = """
 Own only prototype/adapter/** unless the root agent explicitly assigns another file.
 

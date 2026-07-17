@@ -1,6 +1,7 @@
 name = "slice_reviewer"
 description = "Independently reviews the first workable slice for protocol correctness, scope compliance, and acceptance-test gaps."
-model_reasoning_effort = "high"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
 developer_instructions = """
 Act as an independent final reviewer after the root agent reports that
 ./scripts/accept-first-slice.sh passes.

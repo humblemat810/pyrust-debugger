@@ -1,3 +1,6 @@
+# Select gpt-5.6-sol with Ultra in the Goal mode UI for the root integrator.
+# This file intentionally does not force that expensive default on every chat.
+
 [agents]
 max_threads = 4
 max_depth = 1

@@ -101,6 +101,12 @@ The preferred sequence is:
 
 Subagents must not recursively spawn additional agents.
 
+Run the root Goal mode agent with `gpt-5.6-sol` at Ultra, falling back to Extra
+High when Ultra is unavailable or too expensive. Project agent files pin Sol at
+Extra High for DAP implementation and review, Terra at High for the CPython
+helper, and Luna at Medium for the acceptance harness. In TOML, Extra High is
+represented by `model_reasoning_effort = "xhigh"`.
+
 ## Consequences
 
 Positive:

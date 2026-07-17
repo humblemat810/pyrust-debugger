@@ -1,5 +1,9 @@
 # Goal: Complete the First Workable Mixed-Stack Slice
 
+Start the root Goal mode agent with `gpt-5.6-sol` at Ultra. If Ultra is not
+available or its resource use is undesirable, use Extra High; the instructions
+below still require explicit delegation.
+
 Implement the unattended 72-hour technical proof defined by:
 
 - `docs/decisions/0002-72-hour-first-workable-slice.md`

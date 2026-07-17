@@ -3,14 +3,34 @@
 These project-scoped agents support the 72-hour first workable slice defined by
 `docs/decisions/0002-72-hour-first-workable-slice.md`.
 
+## Parent Goal Mode
+
+Start the root goal with:
+
+```text
+Model: gpt-5.6-sol
+Level: Ultra
+```
+
+Ultra is appropriate because the goal intentionally delegates three independent
+workstreams and then runs a separate reviewer. If Ultra is unavailable or too
+expensive, use Extra High. The goal prompt still requests delegation
+explicitly.
+
+The project `config.toml` does not force this selection because doing so would
+apply the expensive root setting to ordinary non-goal chats as well.
+
 ## Roles
 
-| Agent | Ownership | Purpose |
-| --- | --- | --- |
-| `dap_proxy_builder` | `prototype/adapter/**` | Transparent DAP transport and CodeLLDB forwarding |
-| `cpython_stack_builder` | `prototype/python/**` | Stable CPython 3.14 stack-reader command and tests |
-| `slice_acceptance_builder` | `tests/acceptance/**`, `scripts/accept-first-slice.sh` | Black-box acceptance harness |
-| `slice_reviewer` | Read-heavy whole-repository review | Independent completion audit |
+| Agent | Model | Effort | Ownership | Purpose |
+| --- | --- | --- | --- | --- |
+| `dap_proxy_builder` | `gpt-5.6-sol` | Extra High (`xhigh`) | `prototype/adapter/**` | Transparent DAP transport and CodeLLDB forwarding |
+| `cpython_stack_builder` | `gpt-5.6-terra` | High | `prototype/python/**` | Stable CPython 3.14 stack-reader command and tests |
+| `slice_acceptance_builder` | `gpt-5.6-luna` | Medium | `tests/acceptance/**`, `scripts/accept-first-slice.sh` | Black-box acceptance harness |
+| `slice_reviewer` | `gpt-5.6-sol` | Extra High (`xhigh`) | Read-heavy whole-repository review | Independent completion audit |
+
+The custom-agent TOML files pin these models. In configuration files, the UI
+label **Extra High** is written as `model_reasoning_effort = "xhigh"`.
 
 The root goal agent owns:
 
