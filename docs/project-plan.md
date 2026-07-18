@@ -5,6 +5,12 @@
 Deliver a Linux alpha that displays one Python/Rust call stack in VS Code when
 CPython 3.14 calls a Rust extension and stops at a Rust breakpoint.
 
+## Implementation update
+
+The fixture-bound Python-to-Rust proof from ADR 0002 and the stabilization plus
+Rust-outer/Python-inner callback proof from ADR 0003 are complete. The broader
+packaged alpha milestones below remain incomplete.
+
 ## Team assumption
 
 One engineer, limited infrastructure, and no dedicated QA or release engineer.
@@ -149,8 +155,18 @@ Exit gate:
 
 Estimated effort: 5-10 days after alpha.
 
+Status: the constrained ADR 0003 callback proof is complete; broader reverse
+direction product support remains planned.
+
+The first constrained proof within this phase is specified by
+[ADR 0003](decisions/0003-stabilize-before-rust-outer.md) and
+[its acceptance contract](acceptance/rust-outer-stabilization.md). It uses an
+explicit Rust callback breakpoint and does not include Python breakpoint
+support.
+
 Work:
 
+- bound permanently hung in-process unwinds with a session circuit breaker;
 - build Rust binary embedding CPython 3.14;
 - cover Rust -> Python and Rust -> Python -> Rust callback shapes;
 - detect interpreter readiness;
@@ -159,7 +175,34 @@ Work:
 
 Exit gate:
 
-- the same merge engine displays all three logical regions correctly.
+- the same merge engine displays all three logical regions correctly. Passed
+  for the fixed ADR 0003 fixture.
+
+## Phase 6: Containerized VS Code validation
+
+Status: automated implementation complete under
+[ADR 0004](decisions/0004-containerized-vscode-validation.md); human Call Stack
+validation pending.
+
+Work:
+
+- add a pinned Linux x86_64 Dev Container;
+- add the minimal local `pyrust` VS Code extension;
+- register the proxy through a debug-adapter descriptor;
+- add Python-outer and Rust-outer launch configurations;
+- configure bounded `SYS_PTRACE` access;
+- run both existing acceptance commands inside a clean container;
+- add an extension-host smoke test;
+- complete the human Call Stack checklist.
+
+Exit gate:
+
+- automated criteria `AC-CV-01` through `AC-CV-10` in
+  [Containerized VS Code Acceptance](acceptance/containerized-vscode.md)
+  pass without a host `.venv`, host CodeLLDB, privileged mode, or manual
+  repair;
+- complete `HC-CV-01` through `HC-CV-04` using the
+  [manual verification record](acceptance/containerized-vscode-manual.md).
 
 ## Later capability projects
 

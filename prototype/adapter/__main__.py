@@ -41,7 +41,25 @@ def _load_hooks(specification: str | None) -> ProxyHooks:
     return hooks
 
 
-def _default_codelldb_command() -> list[str]:
+def _default_codelldb_command(
+    adapter_path: str | None = None,
+    liblldb_path: str | None = None,
+) -> list[str]:
+    configured_adapter = adapter_path or os.environ.get("PYRUST_CODELLDB")
+    configured_liblldb = liblldb_path or os.environ.get("PYRUST_LIBLLDB")
+    if bool(configured_adapter) != bool(configured_liblldb):
+        raise ValueError(
+            "CodeLLDB adapter and liblldb paths must be configured together"
+        )
+    if configured_adapter and configured_liblldb:
+        adapter = Path(configured_adapter).expanduser()
+        liblldb = Path(configured_liblldb).expanduser()
+        if not adapter.is_file():
+            raise ValueError(f"configured CodeLLDB adapter does not exist: {adapter}")
+        if not liblldb.is_file():
+            raise ValueError(f"configured liblldb does not exist: {liblldb}")
+        return [str(adapter), "--liblldb", str(liblldb)]
+
     extension_root = Path.home() / ".vscode-server" / "extensions"
     candidates = sorted(extension_root.glob("vadimcn.vscode-lldb-1.12.2*"))
     for extension in reversed(candidates):
@@ -78,6 +96,16 @@ def main() -> int:
         help="working directory for the downstream adapter",
     )
     parser.add_argument(
+        "--codelldb",
+        default=os.environ.get("PYRUST_CODELLDB"),
+        help="explicit path to the CodeLLDB adapter executable",
+    )
+    parser.add_argument(
+        "--liblldb",
+        default=os.environ.get("PYRUST_LIBLLDB"),
+        help="explicit path to CodeLLDB's bundled liblldb",
+    )
+    parser.add_argument(
         "downstream_command",
         nargs=argparse.REMAINDER,
         help="downstream adapter command, normally following --",
@@ -90,7 +118,7 @@ def main() -> int:
     automatic_configuration = not command
     if automatic_configuration:
         try:
-            command = _default_codelldb_command()
+            command = _default_codelldb_command(args.codelldb, args.liblldb)
         except ValueError as error:
             parser.error(str(error))
 

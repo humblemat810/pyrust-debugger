@@ -1,0 +1,36 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "pyrust",
+      "request": "launch",
+      "name": "PyRust: Python Outer",
+      "program": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "${workspaceFolder}/research/fixtures/python_outer/app.py"
+      ],
+      "cwd": "${workspaceFolder}",
+      "terminal": "console",
+      "sourceLanguages": [
+        "rust"
+      ],
+      "preLaunchTask": "PyRust: Build Python Outer"
+    },
+    {
+      "type": "pyrust",
+      "request": "launch",
+      "name": "PyRust: Rust Outer",
+      "program": "${env:CARGO_TARGET_DIR}/debug/rust-outer-python-inner",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "LD_LIBRARY_PATH": "${env:PYRUST_PYTHON_LIBDIR}"
+      },
+      "terminal": "console",
+      "sourceLanguages": [
+        "rust"
+      ],
+      "preLaunchTask": "PyRust: Build Rust Outer"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "PyRust: Build Python Outer",
+      "type": "process",
+      "command": "${workspaceFolder}/.venv/bin/maturin",
+      "args": [
+        "develop",
+        "--locked",
+        "--manifest-path",
+        "${workspaceFolder}/research/fixtures/python_outer/Cargo.toml"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PYO3_PYTHON": "${workspaceFolder}/.venv/bin/python"
+        }
+      },
+      "problemMatcher": [
+        "$rustc"
+      ]
+    },
+    {
+      "label": "PyRust: Build Rust Outer",
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "build",
+        "--locked",
+        "--manifest-path",
+        "${workspaceFolder}/research/fixtures/rust_outer/Cargo.toml"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PYO3_PYTHON": "${workspaceFolder}/.venv/bin/python"
+        }
+      },
+      "problemMatcher": [
+        "$rustc"
+      ]
+    }
+  ]
+}

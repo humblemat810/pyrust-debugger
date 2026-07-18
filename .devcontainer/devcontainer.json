@@ -1,0 +1,38 @@
+{
+  "name": "PyRust Debugger",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "runArgs": [
+    "--cap-add=SYS_PTRACE",
+    "--security-opt=seccomp=unconfined"
+  ],
+  "containerEnv": {
+    "CARGO_TARGET_DIR": "/opt/pyrust-target",
+    "PYRUST_CODELLDB": "/opt/vscode-extensions/vadimcn.vscode-lldb-1.12.2/adapter/codelldb",
+    "PYRUST_LIBLLDB": "/opt/vscode-extensions/vadimcn.vscode-lldb-1.12.2/lldb/lib/liblldb.so",
+    "PYRUST_PYTHON_LIBDIR": "/opt/uv-python/cpython-3.14.6-linux-x86_64-gnu/lib",
+    "UV_MANAGED_PYTHON": "1",
+    "UV_PYTHON": "3.14.6",
+    "UV_PYTHON_INSTALL_DIR": "/opt/uv-python"
+  },
+  "mounts": [
+    "source=pyrust-debugger-venv,target=${containerWorkspaceFolder}/.venv,type=volume",
+    "source=pyrust-debugger-node-modules,target=${containerWorkspaceFolder}/vscode-extension/node_modules,type=volume",
+    "source=pyrust-debugger-cargo-target,target=/opt/pyrust-target,type=volume"
+  ],
+  "postCreateCommand": "bash .devcontainer/bootstrap.sh",
+  "remoteUser": "root",
+  "shutdownAction": "stopContainer",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "pyrust.pythonPath": "${workspaceFolder}/.venv/bin/python",
+        "pyrust.adapterPath": "${workspaceFolder}/prototype/adapter/__main__.py",
+        "pyrust.codelldbPath": "/opt/vscode-extensions/vadimcn.vscode-lldb-1.12.2/adapter/codelldb",
+        "pyrust.liblldbPath": "/opt/vscode-extensions/vadimcn.vscode-lldb-1.12.2/lldb/lib/liblldb.so"
+      }
+    }
+  }
+}

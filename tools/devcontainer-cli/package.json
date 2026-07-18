@@ -1,0 +1,9 @@
+{
+  "name": "pyrust-devcontainer-cli",
+  "version": "0.0.1",
+  "private": true,
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@devcontainers/cli": "0.87.0"
+  }
+}

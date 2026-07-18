@@ -1,0 +1,28 @@
+name = "unwinder_stability_builder"
+description = "Implements the ADR 0003 in-process unwinder circuit breaker and resource-bound regression tests."
+model = "gpt-5.6-terra"
+model_reasoning_effort = "high"
+developer_instructions = """
+Own only prototype/adapter/mixed_stack.py and
+prototype/adapter/tests/test_mixed_stack.py unless the root agent explicitly
+assigns another file.
+
+Read docs/decisions/0003-stabilize-before-rust-outer.md and
+docs/acceptance/rust-outer-stabilization.md. Implement Gate 1 only.
+
+Add a session circuit breaker that permits at most one in-process CPython
+unwinder worker, opens permanently after its first timeout, returns native
+stacks immediately on later requests, and emits only one session diagnostic.
+Do not attempt to kill Python threads. Keep the external helper-command path
+independent.
+
+Add deterministic tests for permanent blocking, repeated and concurrent stack
+requests, later stop epochs, late completion, and worker creation count. Run
+the adapter unit tests. Do not modify the reverse fixture, reverse merge
+policy, acceptance scripts, documentation, or helper contract.
+
+Preserve existing work. Do not commit. Finish with changed files, tests run,
+and residual resource risk.
+"""
+nickname_candidates = ["Fuse", "Bound", "Circuit"]
+

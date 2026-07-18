@@ -123,6 +123,14 @@ def fixture_configuration(case: str) -> tuple[dict[str, Any], str, int]:
         return launch, str(source), 6
 
     source = ROOT / "research" / "fixtures" / "rust_outer" / "src" / "main.rs"
+    configured_target = os.environ.get("CARGO_TARGET_DIR")
+    cargo_target = (
+        Path(configured_target)
+        if configured_target
+        else ROOT / "research" / "fixtures" / "rust_outer" / "target"
+    )
+    if not cargo_target.is_absolute():
+        cargo_target = ROOT / cargo_target
     python_libdir = subprocess.check_output(
         [
             str(ROOT / ".venv" / "bin" / "python"),
@@ -133,13 +141,7 @@ def fixture_configuration(case: str) -> tuple[dict[str, Any], str, int]:
     ).strip()
     launch = {
         "program": str(
-            ROOT
-            / "research"
-            / "fixtures"
-            / "rust_outer"
-            / "target"
-            / "debug"
-            / "rust-outer-python-inner"
+            cargo_target / "debug" / "rust-outer-python-inner"
         ),
         "args": [],
         "cwd": str(ROOT),
@@ -147,7 +149,6 @@ def fixture_configuration(case: str) -> tuple[dict[str, Any], str, int]:
         "terminal": "console",
         "sourceLanguages": ["rust"],
     }
-    # The source breakpoint is replaced by a function breakpoint for this case.
     return launch, str(source), 9
 
 
@@ -190,20 +191,14 @@ def run(case: str, mock_frame_provider: bool = False) -> dict[str, Any]:
         client.send("launch", launch)
         client.wait_for_event("initialized")
 
-        if case == "python-outer":
-            breakpoint_sequence = client.send(
-                "setBreakpoints",
-                {
-                    "source": {"path": source_path},
-                    "breakpoints": [{"line": line}],
-                    "sourceModified": False,
-                },
-            )
-        else:
-            breakpoint_sequence = client.send(
-                "setFunctionBreakpoints",
-                {"breakpoints": [{"name": "signal_raise_signal_impl"}]},
-            )
+        breakpoint_sequence = client.send(
+            "setBreakpoints",
+            {
+                "source": {"path": source_path},
+                "breakpoints": [{"line": line}],
+                "sourceModified": False,
+            },
+        )
         breakpoint_response = client.wait_for_response(breakpoint_sequence)
 
         configuration_sequence = client.send("configurationDone")

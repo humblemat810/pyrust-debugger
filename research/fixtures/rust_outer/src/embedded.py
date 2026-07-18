@@ -1,12 +1,6 @@
-import signal
-
-
 def python_inner() -> None:
-    signal.raise_signal(signal.SIGTRAP)
+    rust_callback()
 
 
 def python_outer() -> None:
     python_inner()
-
-
-python_outer()

@@ -18,6 +18,7 @@ fi
 
 echo "acceptance: building Python-outer fixture"
 if ! timeout --foreground 120s "$MATURIN" develop \
+    --locked \
     --manifest-path "$ROOT/research/fixtures/python_outer/Cargo.toml"; then
     echo "acceptance: fixture build failed" >&2
     exit 1

@@ -109,6 +109,10 @@ The helper succeeded while CodeLLDB owned the stopped process with
 
 ## Fixture B: Rust outer, Python inner
 
+The observations immediately below describe the research-time signal fixture.
+ADR 0003 later replaced the signal stop with an explicit Rust callback while
+retaining this file and the same outer Rust/Python call path.
+
 Source:
 
 ```text
@@ -170,6 +174,22 @@ python_outer  embedded.py:9
 ```
 
 The source path was preserved as an absolute workspace path.
+
+### ADR 0003 callback evolution
+
+The current fixture calls this path twice:
+
+```text
+Rust main
+  -> rust_outer
+     -> python_outer
+        -> python_inner
+           -> rust_callback
+```
+
+At the callback breakpoint, CodeLLDB reports `rust_callback` above the Python
+frames and retains `rust_outer` and Rust `main` below them. The automated proof
+is `./scripts/accept-reverse-slice.sh`.
 
 ## DAP observations
 

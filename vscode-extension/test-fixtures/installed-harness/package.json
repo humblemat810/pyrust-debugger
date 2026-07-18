@@ -1,0 +1,15 @@
+{
+  "name": "pyrust-installed-smoke-harness",
+  "displayName": "PyRust Installed Smoke Harness",
+  "description": "Test-only extension host for installed PyRust discovery.",
+  "version": "0.0.1",
+  "publisher": "pyrust",
+  "private": true,
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./extension.js"
+}

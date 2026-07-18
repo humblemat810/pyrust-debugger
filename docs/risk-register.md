@@ -19,6 +19,15 @@
 | R15 | Flattened `RemoteUnwinder` frames cannot represent repeated Python/native blocks | High | High | Use py-spy markers or its merged ordering as an oracle | Phase 1 |
 | R16 | CodeLLDB launch omits DAP process PID | High | High | Structured upstream/custom API or launch wrapper; console parsing only as fallback | Phase 2 |
 | R17 | Scripted provider cannot directly use CPython 3.14 unwinder | High | Medium | `SBProcess` reader or ancestor IPC; retain DAP bridge as default | Architecture checkpoint |
+| R18 | Permanently hung in-process unwinds accumulate daemon threads | Medium | High | ADR 0003 circuit breaker implemented; at most one daemon remains per session; later move the reader to a killable ancestor process or LLDB | Passed for reverse slice |
+| R19 | Rust-outer has no natural Python source stop under native-only control | Certain | High | Explicit Rust callback breakpoint implemented for the stack proof; require a separate ADR for Python breakpoints | Passed for stack-only proof |
+| R20 | Reverse merge drops or misorders lower Rust embedder frames | Medium | High | Golden callback fixture, preserved native IDs, strict fixture symbols, and native-only fallback | Passed for reverse slice |
+| R21 | Container cannot trace or read the debuggee | Low | Critical | One-container ancestry, `SYS_PTRACE`, explicit preflight, native-only failure diagnostics | Automated pass |
+| R22 | Broad container privileges create a false sense of sandboxing | Medium | High | No privileged mode, host PID namespace, or Docker socket; document unconfined seccomp as local-proof only | Automated pass |
+| R23 | Host `.venv` or build artifacts contaminate the container result | Low | High | Fresh-state build, container-created `.venv`, artifact checks, repeated clean rebuild | Automated pass |
+| R24 | CodeLLDB extension version or discovery path drifts | Low | High | Pin 1.12.2 and support explicit adapter and `liblldb` paths | Automated pass |
+| R25 | DAP tests pass but the VS Code debug type or UI workflow is broken | Medium | High | Local wrapper extension, extension-host smoke test, and human Call Stack checklist | Human check pending |
+| R26 | Host VS Code, Dev Containers, or extension-test versions drift | Low | High | Record tested versions, pin the extension-host runner, and report host preflight versions | Automated pass |
 
 ## Top three gates
 
@@ -29,3 +38,22 @@
 The original process-access and single-thread identity gates passed. If a
 remaining gate fails, do not compensate by adding debugpy; reassess the native
 adapter integration first.
+
+## ADR 0003 gates
+
+1. A timed-out in-process reader creates at most one abandoned worker per proxy
+   session.
+2. The reverse stack preserves both the upper Rust callback and lower Rust
+   embedder frames.
+3. Unknown reverse boundaries return the original native stack rather than a
+   guessed ordering.
+
+## ADR 0004 gates
+
+1. A clean container reproduces both existing acceptance commands. Passed.
+2. The local extension starts `pyrust` through VS Code inside the container.
+   Passed under VS Code 1.125.0.
+3. Debugger permissions remain narrower than privileged or host-PID access.
+   Passed.
+4. Both required mixed stacks are visible and interactive in the VS Code Call
+   Stack panel. Human validation pending.

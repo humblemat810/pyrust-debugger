@@ -1,0 +1,6 @@
+src/**
+test-fixtures/**
+node_modules/**
+out/test/**
+tsconfig.json
+*.vsix

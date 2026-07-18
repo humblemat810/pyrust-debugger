@@ -1,7 +1,7 @@
 # Research Fixtures
 
-These programs exist only to inspect debugger behavior. They are not part of
-the proposed mixed-debugger implementation.
+These programs began as debugger research fixtures. They now also drive the
+fixture-bound ADR 0002 and ADR 0003 acceptance proofs.
 
 ## Python outer, Rust inner
 
@@ -29,7 +29,7 @@ main
   -> rust_outer
      -> embedded.py::python_outer
         -> embedded.py::python_inner
-           -> SIGTRAP
+           -> rust_callback
 ```
 
 Build and run:
@@ -45,8 +45,8 @@ LD_LIBRARY_PATH="$PY_LIBDIR" \
   research/fixtures/rust_outer/target/debug/rust-outer-python-inner
 ```
 
-Running the second fixture outside a debugger intentionally terminates on
-`SIGTRAP`. Under LLDB, the signal is the research stop point.
+The embedded Python path invokes `rust_callback` twice so acceptance can verify
+two deterministic stop epochs.
 
 ## CodeLLDB DAP evidence
 

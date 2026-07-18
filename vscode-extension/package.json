@@ -1,0 +1,153 @@
+{
+  "name": "pyrust-debugger",
+  "displayName": "PyRust Debugger",
+  "description": "Fixture-bound mixed Python and Rust stack debugger.",
+  "version": "0.0.1",
+  "publisher": "pyrust",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "Debuggers"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [
+    "onDebug:pyrust"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "PyRust Debugger",
+      "properties": {
+        "pyrust.pythonPath": {
+          "type": "string",
+          "default": "${workspaceFolder}/.venv/bin/python",
+          "description": "CPython 3.14 executable used to launch the PyRust DAP adapter."
+        },
+        "pyrust.adapterPath": {
+          "type": "string",
+          "default": "${workspaceFolder}/prototype/adapter/__main__.py",
+          "description": "Path to the PyRust DAP adapter entry point."
+        },
+        "pyrust.codelldbPath": {
+          "type": "string",
+          "default": "",
+          "description": "Explicit CodeLLDB adapter executable. PYRUST_CODELLDB is used when empty."
+        },
+        "pyrust.liblldbPath": {
+          "type": "string",
+          "default": "",
+          "description": "Explicit bundled liblldb path. PYRUST_LIBLLDB is used when empty."
+        }
+      }
+    },
+    "debuggers": [
+      {
+        "type": "pyrust",
+        "label": "PyRust",
+        "languages": [
+          "python",
+          "rust"
+        ],
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Absolute path to the Python or Rust program."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "cwd": {
+                "type": "string",
+                "default": "${workspaceFolder}"
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "default": {}
+              },
+              "terminal": {
+                "type": "string",
+                "enum": [
+                  "console",
+                  "integrated",
+                  "external"
+                ],
+                "default": "console"
+              },
+              "sourceLanguages": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [
+                  "rust"
+                ]
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "pyrust",
+            "request": "launch",
+            "name": "PyRust: Python Outer",
+            "program": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+              "${workspaceFolder}/research/fixtures/python_outer/app.py"
+            ],
+            "cwd": "${workspaceFolder}",
+            "terminal": "console",
+            "sourceLanguages": [
+              "rust"
+            ]
+          },
+          {
+            "type": "pyrust",
+            "request": "launch",
+            "name": "PyRust: Rust Outer",
+            "program": "${env:CARGO_TARGET_DIR}/debug/rust-outer-python-inner",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+              "LD_LIBRARY_PATH": "${env:PYRUST_PYTHON_LIBDIR}"
+            },
+            "terminal": "console",
+            "sourceLanguages": [
+              "rust"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\"",
+    "compile": "tsc -p ./",
+    "package": "vsce package --allow-missing-repository --out pyrust-debugger.vsix",
+    "test:extension": "node ./out/test/runTest.js",
+    "test:installed-extension": "node ./out/test/runInstalledTest.js",
+    "test": "npm run compile && npm run test:extension && npm run test:installed-extension"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@types/vscode": "1.125.0",
+    "@vscode/test-electron": "3.0.0",
+    "@vscode/vsce": "3.9.2",
+    "typescript": "7.0.2"
+  }
+}

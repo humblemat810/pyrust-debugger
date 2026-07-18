@@ -2,9 +2,13 @@
 
 ## Scope
 
-This audit covers the requested research phase only. No mixed debugger,
-production DAP proxy, CPython memory reader, or VS Code extension has been
-implemented.
+This is the historical audit from the end of the requested research phase. At
+that point no mixed debugger, production DAP proxy, CPython memory reader, or
+VS Code extension had been implemented.
+
+Later on 2026-07-17, ADR 0002 and ADR 0003 implemented fixture-bound DAP proofs
+for both Python-to-Rust and Rust-to-Python-to-Rust callback stacks. Those later
+results do not change whether the earlier research deliverables were complete.
 
 | Requirement | Evidence | Status |
 | --- | --- | --- |
@@ -25,6 +29,49 @@ implemented.
 | Check LLDB synthetic-frame route | mock Python source frame appears in CodeLLDB DAP stack | Complete |
 | Avoid implementing the solution | only fixtures, diagnostic probes, and a mock provider exist | Complete |
 | Ignore generated artifacts | `.gitignore` covers venv, targets, crash dumps, caches, and transcripts | Complete |
+
+## Post-Research Implementation
+
+The current implementation is verified by:
+
+```bash
+./scripts/accept-first-slice.sh
+./scripts/accept-reverse-slice.sh
+./scripts/accept-container.sh
+```
+
+The second command verifies the unwinder circuit breaker and the required
+reverse user-stack subsequence:
+
+```text
+rust_callback
+python_inner
+python_outer
+rust_outer
+main
+```
+
+ADR 0004 adds a local fixture-bound VS Code extension and pinned Linux Dev
+Container. Its automated acceptance passes `AC-CV-01` through `AC-CV-10`.
+This remains a fixed, single-thread, stack-only proof. It does not provide
+Python breakpoints, Python evaluation, arbitrary boundary ordering,
+Marketplace packaging, or product-quality PID discovery. Human VS Code
+criteria `HC-CV-01` through `HC-CV-04` remain pending.
+
+To unblock those criteria when this checkout is on a remote machine, use:
+
+```text
+local VS Code desktop
+  -> Remote-SSH to the Linux Docker host
+  -> open the checkout on that host
+  -> Dev Containers: Reopen in Container
+  -> complete HC-CV-01 through HC-CV-04
+```
+
+Local Docker is not required. The checkout and Docker daemon must be on the
+same remote host. Follow the prerequisite checks, commands, and troubleshooting
+steps in
+[Containerized VS Code Manual Verification](../acceptance/containerized-vscode-manual.md).
 
 ## Verified commands
 

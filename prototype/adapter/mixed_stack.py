@@ -24,12 +24,20 @@ class HelperTimeout(HelperFailure):
     """The configured external helper exceeded its deadline."""
 
 
+class InProcessHelperTimeout(HelperTimeout):
+    """The in-process unwinder timed out and opened its session circuit."""
+
+
+class InProcessUnwinderUnavailable(HelperFailure):
+    """The in-process unwinder cannot be used for this stack request."""
+
+
 class StaleStopError(RuntimeError):
     """The debuggee continued while a stack request was in flight."""
 
 
 class MixedStackHooks(ProxyHooks):
-    """Merge one CPython stack into the fixed Python-to-Rust fixture stack."""
+    """Merge one CPython stack into either supported fixture stack."""
 
     def __init__(self) -> None:
         self._lock = Lock()
@@ -37,6 +45,9 @@ class MixedStackHooks(ProxyHooks):
         self._helper_timeout_ms = 1_000
         self._stopped_thread_id: int | None = None
         self._diagnosed_epochs: set[int] = set()
+        self._in_process_worker_active = False
+        self._in_process_circuit_open = False
+        self._in_process_timeout_diagnosed = False
 
     def on_launch(self, request: Message, context: ProxyContext) -> Message:
         outgoing = dict(request)
@@ -146,11 +157,26 @@ class MixedStackHooks(ProxyHooks):
             self._require_epoch(context, request_epoch)
         except StaleStopError as error:
             return LocalResponse(success=False, message=str(error))
-        except HelperTimeout as error:
-            self._diagnose_once(context, f"PyRust helper timeout: {error}")
-            merged = native_frames
-        except (HelperFailure, StackReadError) as error:
-            self._diagnose_once(context, f"PyRust helper failure: {error}")
+        except (
+            InProcessUnwinderUnavailable,
+            HelperTimeout,
+            HelperFailure,
+            StackReadError,
+        ) as error:
+            if isinstance(error, InProcessHelperTimeout):
+                self._diagnose_in_process_timeout_once(context)
+            try:
+                self._require_epoch(context, request_epoch)
+            except StaleStopError as stale_error:
+                return LocalResponse(success=False, message=str(stale_error))
+            if isinstance(error, InProcessUnwinderUnavailable):
+                pass
+            elif isinstance(error, InProcessHelperTimeout):
+                pass
+            elif isinstance(error, HelperTimeout):
+                self._diagnose_once(context, f"PyRust helper timeout: {error}")
+            else:
+                self._diagnose_once(context, f"PyRust helper failure: {error}")
             merged = native_frames
 
         start = arguments.get("startFrame", 0)
@@ -202,11 +228,22 @@ class MixedStackHooks(ProxyHooks):
             return [self._validate_python_frame(frame) for frame in frames]
         raise HelperFailure(f"helper returned no Python stack for thread {thread_id}")
 
-    @staticmethod
     def _run_in_process_helper(
+        self,
         process_id: int,
         timeout_ms: int,
     ) -> list[dict[str, Any]]:
+        with self._lock:
+            if self._in_process_circuit_open:
+                raise InProcessUnwinderUnavailable(
+                    "in-process unwinder circuit is open"
+                )
+            if self._in_process_worker_active:
+                raise InProcessUnwinderUnavailable(
+                    "in-process unwinder worker is already active"
+                )
+            self._in_process_worker_active = True
+
         results: Queue[tuple[bool, object]] = Queue(maxsize=1)
 
         def collect() -> None:
@@ -216,16 +253,31 @@ class MixedStackHooks(ProxyHooks):
                 results.put((False, error))
             else:
                 results.put((True, stacks))
+            finally:
+                with self._lock:
+                    self._in_process_worker_active = False
 
-        Thread(
-            target=collect,
-            name="pyrust-cpython-unwinder",
-            daemon=True,
-        ).start()
+        try:
+            Thread(
+                target=collect,
+                name="pyrust-cpython-unwinder",
+                daemon=True,
+            ).start()
+        except Exception as error:
+            with self._lock:
+                self._in_process_worker_active = False
+            raise HelperFailure(
+                f"could not start in-process unwinder worker: {error}"
+            ) from error
+
         try:
             succeeded, value = results.get(timeout=timeout_ms / 1_000)
         except Empty as error:
-            raise HelperTimeout(f"in-process unwind exceeded {timeout_ms} ms") from error
+            with self._lock:
+                self._in_process_circuit_open = True
+            raise InProcessHelperTimeout(
+                f"in-process unwind exceeded {timeout_ms} ms"
+            ) from error
         if succeeded:
             assert isinstance(value, list)
             return value
@@ -307,16 +359,10 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
         request_epoch: int,
     ) -> list[dict[str, Any]]:
-        if len(native_frames) < 2:
-            raise HelperFailure("native stack is too short for fixture boundary")
-        leaves = [
-            str(frame.get("name", "")).rsplit("::", 1)[-1]
-            for frame in native_frames[:2]
-        ]
-        if leaves != ["rust_inner", "rust_outer"]:
-            raise HelperFailure(
-                f"native fixture boundary was not found: {leaves!r}"
-            )
+        insertion_index = MixedStackHooks._fixture_insertion_index(
+            native_frames,
+            python_frames,
+        )
 
         synthetic: list[dict[str, Any]] = []
         for index, frame in enumerate(python_frames):
@@ -345,7 +391,52 @@ class MixedStackHooks(ProxyHooks):
                     "presentationHint": "normal",
                 }
             )
-        return native_frames[:2] + synthetic + native_frames[2:]
+        return (
+            native_frames[:insertion_index]
+            + synthetic
+            + native_frames[insertion_index:]
+        )
+
+    @staticmethod
+    def _fixture_insertion_index(
+        native_frames: list[dict[str, Any]],
+        python_frames: list[dict[str, Any]],
+    ) -> int:
+        names = [str(frame.get("name", "")) for frame in native_frames]
+        leaves = [MixedStackHooks._frame_leaf(frame) for frame in native_frames]
+        if leaves[:2] == ["rust_inner", "rust_outer"]:
+            return 2
+
+        if names[:1] != ["rust_outer_python_inner::rust_callback"]:
+            raise HelperFailure(
+                f"native fixture boundary was not found: {leaves[:2]!r}"
+            )
+        python_names = [str(frame.get("name", "")) for frame in python_frames]
+        if python_names not in (
+            ["python_inner", "python_outer"],
+            ["python_inner", "python_outer", "<module>"],
+        ):
+            raise HelperFailure(
+                f"Rust-outer Python boundary was not found: {python_names!r}"
+            )
+        try:
+            rust_outer_index = names.index(
+                "rust_outer_python_inner::rust_outer",
+                1,
+            )
+            names.index(
+                "rust_outer_python_inner::main",
+                rust_outer_index + 1,
+            )
+        except ValueError as error:
+            raise HelperFailure(
+                "Rust-outer fixture boundary was not found"
+            ) from error
+        return 1
+
+    @staticmethod
+    def _frame_leaf(frame: Mapping[str, Any]) -> str:
+        return str(frame.get("name", "")).rsplit("::", 1)[-1]
 
     @staticmethod
     def _native_stack_arguments(
@@ -375,3 +466,13 @@ class MixedStackHooks(ProxyHooks):
                 return
             self._diagnosed_epochs.add(epoch)
         context.send_output(f"{message}\n", category="stderr")
+
+    def _diagnose_in_process_timeout_once(self, context: ProxyContext) -> None:
+        with self._lock:
+            if self._in_process_timeout_diagnosed:
+                return
+            self._in_process_timeout_diagnosed = True
+        context.send_output(
+            "PyRust in-process unwinder timeout; circuit opened for this session\n",
+            category="stderr",
+        )

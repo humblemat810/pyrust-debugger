@@ -15,15 +15,16 @@ This is the cheaper direction to validate because LLDB can launch the Python
 executable and debug the Rust shared library normally. The project only needs
 to add Python's logical frames to the native stack.
 
-The reverse direction:
+The implemented reverse proof:
 
 ```text
-Rust application -> embedded Python
+Rust application -> embedded Python -> Rust callback
 ```
 
-uses the same stack-merging mechanism, but is deferred until the core approach
-works. It adds interpreter initialization, packaging, and attach timing without
-reducing the main technical risk.
+uses the same stack-merging mechanism. ADR 0003 bounds permanently hung
+in-process unwinds with a session circuit breaker and proves this reverse stack
+at an explicit Rust callback breakpoint. It does not add Python breakpoints or
+evaluation.
 
 ## MVP boundary
 
@@ -81,4 +82,34 @@ complete automated contract, including the real CodeLLDB integration, with:
 
 The command must report `PASS` for `AC-HP-01` through `AC-SP-04`. This slice is
 limited to the documented CPython 3.14, Linux, single-thread Python-to-Rust
-fixture; it is not yet a packaged VS Code extension.
+fixture.
+
+Run the stabilization and Rust-outer callback proof with:
+
+```bash
+./scripts/accept-reverse-slice.sh
+```
+
+This command reports `PASS` for `AC-BF-01` through `AC-BF-05` and `AC-RP-01`
+through `AC-RP-07`, while also rerunning the original slice.
+
+## Containerized VS Code validation
+
+ADR 0004 adds a local `pyrust` VS Code extension and a pinned Linux x86_64 Dev
+Container. Run its complete automated contract with:
+
+```bash
+./scripts/accept-container.sh
+```
+
+The command builds from a no-cache state, recreates the container and its named
+volumes, runs both debugger directions, and starts VS Code 1.125.0 under
+`xvfb`. It must report `AC-CV-01 PASS` through `AC-CV-10 PASS`.
+
+The extension is local and fixture-bound; it is not published to the
+Marketplace. Human Call Stack validation remains a separate checklist in
+[`docs/acceptance/containerized-vscode-manual.md`](docs/acceptance/containerized-vscode-manual.md).
+When Docker and the checkout are on a remote Linux machine, connect to that
+machine with VS Code Remote-SSH, open the remote checkout, and then use
+`Dev Containers: Reopen in Container`; the checklist includes the full remote
+unblocking sequence.
