@@ -135,6 +135,15 @@
                 ],
                 "default": "native",
                 "description": "Use children to launch the parent directly and attach CodeLLDB only to registered child processes."
+              },
+              "pyrustThreadMode": {
+                "type": "string",
+                "enum": [
+                  "all",
+                  "single"
+                ],
+                "default": "all",
+                "description": "Use single only when a child fixture requires per-thread continuation."
               }
             }
           }
@@ -262,6 +271,23 @@
             },
             "pyrustChildRegistryPath": "${workspaceFolder}/.pyrust-child-registry",
             "pyrustProcessMode": "children"
+          },
+          {
+            "type": "pyrust",
+            "request": "launch",
+            "name": "PyRust: Process and Threads",
+            "program": "${env:CARGO_TARGET_DIR}/debug/rust-outer-python-process-threads",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+              "PYRUST_CHILD_REGISTRY": "${workspaceFolder}/.pyrust-child-registry",
+              "PYRUST_PYTHON": "${workspaceFolder}/.venv/bin/python",
+              "PYRUST_PROCESS_THREAD_WORKER": "${workspaceFolder}/tests/acceptance/process_thread_worker.py"
+            },
+            "pyrustChildRegistryPath": "${workspaceFolder}/.pyrust-child-registry",
+            "pyrustProcessMode": "children",
+            "pyrustThreadMode": "single",
+            "preLaunchTask": "PyRust: Build Rust Process and Threads"
           }
         ]
       }

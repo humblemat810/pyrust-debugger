@@ -27,19 +27,21 @@ _VARIABLE_REFERENCE_START = 1_500_000_000
 class _ChildSession:
     process_id: int
     transport: ChildCodelldbTransport
-    thread_ids: set[int]
+    threads: dict[int, str | None]
     ready: bool = False
 
 
 @dataclass(frozen=True)
 class _FrameRoute:
     process_id: int
+    thread_id: int
     frame_id: int
 
 
 @dataclass(frozen=True)
 class _VariableRoute:
     process_id: int
+    thread_id: int
     variables_reference: int
 
 
@@ -54,6 +56,7 @@ class ProcessManager:
         cwd: str,
         state: ProxySessionState,
         emit_event: EventCallback,
+        force_single_thread: bool = False,
         transport_factory: TransportFactory | None = None,
     ) -> None:
         self._registry_path = registry_path
@@ -61,15 +64,17 @@ class ProcessManager:
         self._cwd = cwd
         self._state = state
         self._emit_event = emit_event
+        self._force_single_thread = force_single_thread
         self._transport_factory = transport_factory or _default_transport_factory
         self._lock = Lock()
         self._breakpoints: list[dict[str, Any]] = []
         self._configuration_done = False
         self._sessions: dict[int, _ChildSession] = {}
+        self._retired_process_ids: set[int] = set()
         self._frame_routes: dict[int, _FrameRoute] = {}
-        self._frame_keys: dict[tuple[int, int], int] = {}
+        self._frame_keys: dict[tuple[int, int, int], int] = {}
         self._variable_routes: dict[int, _VariableRoute] = {}
-        self._variable_keys: dict[tuple[int, int], int] = {}
+        self._variable_keys: dict[tuple[int, int, int], int] = {}
         self._next_frame_id = _FRAME_ID_START
         self._next_variable_reference = _VARIABLE_REFERENCE_START
         self._stop = False
@@ -113,18 +118,60 @@ class ProcessManager:
             self._configuration_done = True
 
     def threads(self) -> list[dict[str, Any]]:
+        self.refresh_threads()
         with self._lock:
-            sessions = tuple(self._sessions.values())
+            sessions = tuple(
+                (session.process_id, dict(session.threads))
+                for session in self._sessions.values()
+            )
         threads: list[dict[str, Any]] = []
-        for session in sessions:
-            for thread_id in sorted(session.thread_ids):
+        for process_id, process_threads in sessions:
+            for thread_id in sorted(process_threads):
+                name = process_threads[thread_id]
                 threads.append(
                     {
                         "id": thread_id,
-                        "name": f"process {session.process_id}: tid={thread_id}",
+                        "name": (
+                            f"process {process_id}: {name}"
+                            if name
+                            else f"process {process_id}: tid={thread_id}"
+                        ),
                     }
                 )
         return threads
+
+    def refresh_threads(self) -> None:
+        """Refresh declared worker identities without blocking on CodeLLDB."""
+
+        with self._lock:
+            sessions = tuple(self._sessions.values())
+        records = {
+            record["pid"]: record for record in read_child_registry(self._registry_path)
+        }
+        for session in sessions:
+            record = records.get(session.process_id)
+            if record is None:
+                continue
+            declared_threads = record.get("threads")
+            if not isinstance(declared_threads, list):
+                continue
+            for thread in declared_threads:
+                if not isinstance(thread, dict):
+                    continue
+                thread_id = thread.get("threadId")
+                if (
+                    not isinstance(thread_id, int)
+                    or isinstance(thread_id, bool)
+                    or thread_id <= 0
+                ):
+                    continue
+                name = thread.get("name")
+                self._record_thread(
+                    session.process_id,
+                    thread_id,
+                    name=name if isinstance(name, str) and name else None,
+                    activate=False,
+                )
 
     def owns_thread(self, thread_id: object) -> bool:
         return isinstance(thread_id, int) and self._session_for_thread(thread_id) is not None
@@ -155,7 +202,10 @@ class ProcessManager:
         frames = body.get("stackFrames")
         if not isinstance(frames, list):
             raise ChildTransportError("child stackTrace response has no stackFrames")
-        translated = [self._translate_frame(session.process_id, frame) for frame in frames]
+        translated = [
+            self._translate_frame(session.process_id, thread_id, frame)
+            for frame in frames
+        ]
         return {
             "success": True,
             "body": {"stackFrames": translated, "totalFrames": len(translated)},
@@ -183,7 +233,11 @@ class ProcessManager:
             "success": True,
             "body": {
                 "scopes": [
-                    self._translate_variables_reference(route.process_id, scope)
+                    self._translate_variables_reference(
+                        route.process_id,
+                        route.thread_id,
+                        scope,
+                    )
                     for scope in scopes
                     if isinstance(scope, dict)
                 ]
@@ -205,7 +259,11 @@ class ProcessManager:
             "success": True,
             "body": {
                 "variables": [
-                    self._translate_variables_reference(route.process_id, variable)
+                    self._translate_variables_reference(
+                        route.process_id,
+                        route.thread_id,
+                        variable,
+                    )
                     for variable in variables
                     if isinstance(variable, dict)
                 ]
@@ -228,16 +286,25 @@ class ProcessManager:
             return {"success": True, "body": {}}
         return {
             "success": True,
-            "body": self._translate_variables_reference(route.process_id, body),
+            "body": self._translate_variables_reference(
+                route.process_id,
+                route.thread_id,
+                body,
+            ),
         }
 
-    def continue_thread(self, thread_id: int) -> Message:
+    def continue_thread(self, thread_id: int, *, single_thread: bool = False) -> Message:
         session = self._session_for_thread(thread_id)
         if session is None:
             raise ChildTransportError(f"no child transport owns thread {thread_id}")
         response = session.transport.request(
             "continue",
-            {"threadId": thread_id, "singleThread": False},
+            # Child coordinator mode exposes one selectable native worker at a
+            # time. Keep sibling workers stopped until the user selects them.
+            {
+                "threadId": thread_id,
+                "singleThread": single_thread or self._force_single_thread,
+            },
         )
         # CodeLLDB reports continued asynchronously. Invalidate proxy-owned
         # Python frames as soon as the native resume was accepted so a client
@@ -250,7 +317,7 @@ class ProcessManager:
                 }
             }
         )
-        self._clear_process_routes(session.process_id)
+        self._clear_thread_routes(session.process_id, thread_id)
         return response
 
     def close(self) -> None:
@@ -278,7 +345,11 @@ class ProcessManager:
         if not (self._registry_path / f"ready-{process_id}").is_file():
             return
         with self._lock:
-            if process_id in self._sessions or self._stop:
+            if (
+                process_id in self._sessions
+                or process_id in self._retired_process_ids
+                or self._stop
+            ):
                 return
             breakpoints = tuple(self._breakpoints)
         startup_events: list[Message] = []
@@ -302,16 +373,35 @@ class ProcessManager:
                 process_id,
                 parent_process_id=parent_process_id,
                 display_name=str(record.get("label") or f"Child {process_id}"),
-                role="Python child process",
+                role=(
+                    str(record["role"])
+                    if isinstance(record.get("role"), str) and record["role"]
+                    else "Python child process"
+                ),
+                command=(
+                    str(record["command"])
+                    if isinstance(record.get("command"), str)
+                    else None
+                ),
+                inherit_default_metadata=False,
             )
-            session = _ChildSession(process_id, transport, set(), ready=True)
+            session = _ChildSession(process_id, transport, {}, ready=True)
             with self._lock:
-                if process_id in self._sessions or self._stop:
+                if (
+                    process_id in self._sessions
+                    or process_id in self._retired_process_ids
+                    or self._stop
+                ):
                     transport.close()
                     return
                 self._sessions[process_id] = session
                 session.ready = True
-                startup_events.clear()
+            for event in startup_events:
+                self._handle_child_event(process_id, event)
+            with self._lock:
+                session_is_live = process_id in self._sessions
+            if not session_is_live:
+                return
             # Do not issue a threads request before the child is released.
             # CodeLLDB's attach handshake remains asynchronous at this point;
             # the first real stopped/thread event supplies the authoritative ID.
@@ -335,12 +425,12 @@ class ProcessManager:
         name = event.get("event")
         body = dict(event.get("body") or {})
         thread_id = body.get("threadId")
-        if isinstance(thread_id, int) and thread_id > 0:
-            with self._lock:
-                session = self._sessions.get(process_id)
-                if session is not None:
-                    session.thread_ids.add(thread_id)
-            self._state.bind_thread(
+        if (
+            isinstance(thread_id, int)
+            and not isinstance(thread_id, bool)
+            and thread_id > 0
+        ):
+            self._record_thread(
                 process_id,
                 thread_id,
                 name=(
@@ -360,22 +450,50 @@ class ProcessManager:
             self._clear_process_routes(process_id)
             with self._lock:
                 exited_session = self._sessions.pop(process_id, None)
+                self._retired_process_ids.add(process_id)
             if exited_session is not None:
                 exited_session.transport.close()
         if name in {"stopped", "continued", "exited", "terminated", "thread"}:
             self._emit_event(str(name), body)
 
-    def _translate_frame(self, process_id: int, frame: Mapping[str, Any]) -> dict[str, Any]:
+    def _record_thread(
+        self,
+        process_id: int,
+        thread_id: int,
+        *,
+        name: str | None = None,
+        activate: bool = True,
+    ) -> None:
+        with self._lock:
+            session = self._sessions.get(process_id)
+            if session is None:
+                return
+            existing_name = session.threads.get(thread_id)
+            session.threads[thread_id] = name or existing_name
+        self._state.bind_thread(
+            process_id,
+            thread_id,
+            name=name,
+            activate=activate,
+        )
+
+    def _translate_frame(
+        self,
+        process_id: int,
+        thread_id: int,
+        frame: Mapping[str, Any],
+    ) -> dict[str, Any]:
         translated = dict(frame)
         frame_id = frame.get("id")
         if not isinstance(frame_id, int):
             raise ChildTransportError("child stack frame has no integer ID")
-        translated["id"] = self._allocate_frame_id(process_id, frame_id)
+        translated["id"] = self._allocate_frame_id(process_id, thread_id, frame_id)
         return translated
 
     def _translate_variables_reference(
         self,
         process_id: int,
+        thread_id: int,
         value: Mapping[str, Any],
     ) -> dict[str, Any]:
         translated = dict(value)
@@ -383,12 +501,13 @@ class ProcessManager:
         if isinstance(reference, int) and reference > 0:
             translated["variablesReference"] = self._allocate_variable_reference(
                 process_id,
+                thread_id,
                 reference,
             )
         return translated
 
-    def _allocate_frame_id(self, process_id: int, frame_id: int) -> int:
-        key = (process_id, frame_id)
+    def _allocate_frame_id(self, process_id: int, thread_id: int, frame_id: int) -> int:
+        key = (process_id, thread_id, frame_id)
         with self._lock:
             existing = self._frame_keys.get(key)
             if existing is not None:
@@ -396,11 +515,16 @@ class ProcessManager:
             result = self._next_frame_id
             self._next_frame_id += 1
             self._frame_keys[key] = result
-            self._frame_routes[result] = _FrameRoute(process_id, frame_id)
+            self._frame_routes[result] = _FrameRoute(process_id, thread_id, frame_id)
             return result
 
-    def _allocate_variable_reference(self, process_id: int, reference: int) -> int:
-        key = (process_id, reference)
+    def _allocate_variable_reference(
+        self,
+        process_id: int,
+        thread_id: int,
+        reference: int,
+    ) -> int:
+        key = (process_id, thread_id, reference)
         with self._lock:
             existing = self._variable_keys.get(key)
             if existing is not None:
@@ -408,7 +532,11 @@ class ProcessManager:
             result = self._next_variable_reference
             self._next_variable_reference += 1
             self._variable_keys[key] = result
-            self._variable_routes[result] = _VariableRoute(process_id, reference)
+            self._variable_routes[result] = _VariableRoute(
+                process_id,
+                thread_id,
+                reference,
+            )
             return result
 
     def _clear_process_routes(self, process_id: int) -> None:
@@ -434,10 +562,33 @@ class ProcessManager:
                 if key[0] != process_id
             }
 
+    def _clear_thread_routes(self, process_id: int, thread_id: int) -> None:
+        with self._lock:
+            self._frame_routes = {
+                virtual: route
+                for virtual, route in self._frame_routes.items()
+                if (route.process_id, route.thread_id) != (process_id, thread_id)
+            }
+            self._frame_keys = {
+                key: virtual
+                for key, virtual in self._frame_keys.items()
+                if key[:2] != (process_id, thread_id)
+            }
+            self._variable_routes = {
+                virtual: route
+                for virtual, route in self._variable_routes.items()
+                if (route.process_id, route.thread_id) != (process_id, thread_id)
+            }
+            self._variable_keys = {
+                key: virtual
+                for key, virtual in self._variable_keys.items()
+                if key[:2] != (process_id, thread_id)
+            }
+
     def _session_for_thread(self, thread_id: int) -> _ChildSession | None:
         with self._lock:
             for session in self._sessions.values():
-                if thread_id in session.thread_ids:
+                if thread_id in session.threads:
                     return session
         return None
 

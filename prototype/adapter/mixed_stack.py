@@ -75,6 +75,7 @@ class MixedStackHooks(ProxyHooks):
         helper_timeout_ms = arguments.pop("pyrustHelperTimeoutMs", None)
         child_registry = arguments.pop("pyrustChildRegistryPath", None)
         process_mode = arguments.pop("pyrustProcessMode", "native")
+        thread_mode = arguments.pop("pyrustThreadMode", "all")
 
         if helper_command is not None and not isinstance(helper_command, str):
             raise ValueError("pyrustHelperCommand must be a string")
@@ -94,11 +95,15 @@ class MixedStackHooks(ProxyHooks):
             raise ValueError(
                 "pyrustProcessMode 'children' requires pyrustChildRegistryPath"
             )
+        if thread_mode not in {"all", "single"}:
+            raise ValueError("pyrustThreadMode must be 'all' or 'single'")
         if process_mode == "children":
             _prepare_child_registry(Path(child_registry))
         program = arguments.get("program")
         process_metadata = (
-            _launch_process_metadata(program) if isinstance(program, str) else None
+            _launch_process_metadata(program, arguments.get("args"))
+            if isinstance(program, str)
+            else None
         )
 
         with self._lock:
@@ -119,7 +124,7 @@ class MixedStackHooks(ProxyHooks):
                     context,
                 )
                 parent_role = (
-                    f"{process_metadata[1]} parent process"
+                    f"{process_metadata[1].removesuffix(' process')} parent process"
                     if process_metadata is not None
                     else "Rust parent process"
                 )
@@ -127,6 +132,11 @@ class MixedStackHooks(ProxyHooks):
                     self._child_only_process.pid,
                     display_name=parent_role,
                     role=parent_role,
+                    command=(
+                        process_metadata[2]
+                        if process_metadata is not None
+                        else None
+                    ),
                 )
             if child_registry is not None:
                 self._process_manager = ProcessManager(
@@ -134,6 +144,7 @@ class MixedStackHooks(ProxyHooks):
                     adapter_command=_child_codelldb_command(),
                     cwd=str(Path(__file__).resolve().parents[2]),
                     state=context.state,
+                    force_single_thread=thread_mode == "single",
                     emit_event=lambda event, body: self._emit_child_event(
                         context,
                         event,
@@ -182,10 +193,19 @@ class MixedStackHooks(ProxyHooks):
         manager = self._process_manager
         if manager is not None and manager.owns_thread(thread_id):
             assert isinstance(thread_id, int)
+            requested_single_thread = (request.get("arguments") or {}).get(
+                "singleThread"
+            )
             try:
-                response = manager.continue_thread(thread_id)
-            except ChildTransportError as error:
-                return LocalResponse(success=False, message=str(error))
+                response = manager.continue_thread(
+                    thread_id,
+                    single_thread=bool(requested_single_thread),
+                )
+            except Exception as error:
+                return LocalResponse(
+                    success=False,
+                    message=f"child continue failed: {error!r}",
+                )
             return LocalResponse(body=dict(response.get("body") or {}))
 
         # CodeLLDB may emit continued after a fast async future has already
@@ -257,6 +277,8 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse:
         del request
+        if self._process_manager is not None:
+            self._process_manager.refresh_threads()
         return LocalResponse(body={"processes": context.state.process_tree()})
 
     def on_scopes(
@@ -416,6 +438,7 @@ class MixedStackHooks(ProxyHooks):
             if manager is not None and manager.owns_thread(thread_id)
             else None
         )
+        synthetic_process = context.state.process_id_for_thread(thread_id)
         request_epoch = context.state.stop_epoch
         synthetic_epoch = None if child_process is not None else request_epoch
         try:
@@ -423,6 +446,7 @@ class MixedStackHooks(ProxyHooks):
                 context,
                 request_epoch,
                 process_id=child_process,
+                thread_id=thread_id,
             )
         except StaleStopError as error:
             return LocalResponse(success=False, message=str(error))
@@ -466,6 +490,7 @@ class MixedStackHooks(ProxyHooks):
                 context,
                 request_epoch,
                 process_id=child_process,
+                thread_id=thread_id,
             )
             python_frames = self._read_python_frames(
                 process_id=(
@@ -478,11 +503,13 @@ class MixedStackHooks(ProxyHooks):
                 context,
                 request_epoch,
                 process_id=child_process,
+                thread_id=thread_id,
             )
             merged = self._merge_frames(
                 native_frames,
                 python_frames,
                 thread_id,
+                synthetic_process,
                 native_ids,
                 context,
                 synthetic_epoch,
@@ -491,6 +518,7 @@ class MixedStackHooks(ProxyHooks):
                 context,
                 request_epoch,
                 process_id=child_process,
+                thread_id=thread_id,
             )
         except StaleStopError as error:
             return LocalResponse(success=False, message=str(error))
@@ -507,6 +535,7 @@ class MixedStackHooks(ProxyHooks):
                     context,
                     request_epoch,
                     process_id=child_process,
+                    thread_id=thread_id,
                 )
             except StaleStopError as stale_error:
                 return LocalResponse(success=False, message=str(stale_error))
@@ -744,6 +773,7 @@ class MixedStackHooks(ProxyHooks):
         native_frames: list[dict[str, Any]],
         python_frames: list[dict[str, Any]],
         thread_id: int,
+        process_id: int | None,
         native_ids: list[int],
         context: ProxyContext,
         synthetic_epoch: int | None,
@@ -766,6 +796,7 @@ class MixedStackHooks(ProxyHooks):
                 frame,
                 native_frame_ids=native_ids,
                 expected_epoch=synthetic_epoch,
+                process_id=process_id,
             )
             synthetic.append(
                 {
@@ -843,10 +874,15 @@ class MixedStackHooks(ProxyHooks):
         expected_epoch: int,
         *,
         process_id: int | None = None,
+        thread_id: int | None = None,
     ) -> None:
         if process_id is not None:
             snapshot = context.state.process_snapshot(process_id)
-            if snapshot is None or not snapshot.is_stopped:
+            if (
+                snapshot is None
+                or not snapshot.is_stopped
+                or (thread_id is not None and not context.state.is_thread_stopped(thread_id))
+            ):
                 raise StaleStopError(
                     "debuggee continued while stackTrace was being collected"
                 )
@@ -1132,13 +1168,22 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
         process.wait(timeout=2)
 
 
-def _launch_process_metadata(program: object) -> tuple[str, str]:
+def _launch_process_metadata(
+    program: str,
+    raw_args: object = None,
+) -> tuple[str, str, str]:
     """Infer the direct launch language without inspecting child process names."""
 
-    executable = Path(str(program)).name.lower()
+    executable = Path(program).name.lower()
     language = "Python" if executable.startswith("python") else "Rust"
     role = f"{language} process"
-    return role, role
+    args = (
+        raw_args
+        if isinstance(raw_args, list)
+        and all(isinstance(item, str) for item in raw_args)
+        else []
+    )
+    return role, role, shlex.join([program, *args])
 
 
 def _prepare_child_registry(path: Path) -> None:

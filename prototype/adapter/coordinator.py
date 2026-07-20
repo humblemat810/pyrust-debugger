@@ -8,6 +8,8 @@ from typing import Literal
 
 
 DebugEngine = Literal["native", "python"]
+MAX_PROCESS_COMMAND_LENGTH = 512
+PROCESS_COMMAND_UNAVAILABLE = "command unavailable"
 
 
 class CoordinationError(RuntimeError):
@@ -43,6 +45,7 @@ class ProcessSession:
     python_connected: bool = False
     display_name: str | None = None
     role: str | None = None
+    command: str | None = None
     children: set[int] = field(default_factory=set)
     threads: dict[int, ThreadBinding] = field(default_factory=dict)
 
@@ -69,10 +72,12 @@ class ProcessCoordinator:
         engine: DebugEngine | None = None,
         display_name: str | None = None,
         role: str | None = None,
+        command: str | None = None,
     ) -> ProcessSession:
         _require_id(process_id, "process ID")
         if parent_process_id is not None:
             _require_id(parent_process_id, "parent process ID")
+        command_summary = bounded_process_command(command)
         with self._lock:
             session = self._processes.get(process_id)
             if session is None:
@@ -95,6 +100,8 @@ class ProcessCoordinator:
                 session.display_name = display_name
             if role:
                 session.role = role
+            if command_summary:
+                session.command = command_summary
 
             if parent_process_id is not None:
                 parent = self._processes.get(parent_process_id)
@@ -229,9 +236,23 @@ def _copy_session(session: ProcessSession) -> ProcessSession:
         python_connected=session.python_connected,
         display_name=session.display_name,
         role=session.role,
+        command=session.command,
         children=set(session.children),
         threads=dict(session.threads),
     )
+
+
+def bounded_process_command(command: object) -> str | None:
+    """Normalize one informational command without consulting live processes."""
+
+    if not isinstance(command, str):
+        return None
+    summary = " ".join(command.split())
+    if not summary:
+        return None
+    if len(summary) <= MAX_PROCESS_COMMAND_LENGTH:
+        return summary
+    return f"{summary[: MAX_PROCESS_COMMAND_LENGTH - 3].rstrip()}..."
 
 
 def _require_id(value: object, label: str) -> None:

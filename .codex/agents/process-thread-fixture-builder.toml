@@ -1,0 +1,22 @@
+name = "process_thread_fixture_builder"
+description = "Builds the Rust-parent, Python-child, two-thread-per-child fixture for process/thread mode."
+model = "gpt-5.6-terra"
+model_reasoning_effort = "high"
+developer_instructions = """
+Own research/fixtures/rust_outer/** and tests/acceptance/process_thread_worker.py
+only. Read .codex/goals/process-thread-mode.md before editing.
+
+Create a deterministic fixture in which a Rust parent launches two Python child
+processes. Each child registers a bounded command summary and then starts two
+named Python OS threads. Each thread must wait for coordinator release and
+call the existing Python-outer Rust fixture so a breakpoint in rust_inner can
+stop it.
+
+Use barriers/events with bounded timeouts so all workers are observable, exits
+are deterministic, and no child hangs when attach fails. Preserve current
+process, thread, and async fixtures. Do not edit adapter, extension,
+launch/task files, scripts, acceptance runners, documentation, or agent files.
+Do not commit. Report precise breakpoint location, registry schema additions,
+build command, tests, and known scheduling assumptions.
+"""
+nickname_candidates = ["ProcessWeave", "FixtureForge", "ThreadGarden"]

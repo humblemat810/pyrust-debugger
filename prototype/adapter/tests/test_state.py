@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import io
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import unittest
 
+from prototype.adapter.coordinator import MAX_PROCESS_COMMAND_LENGTH
+from prototype.adapter.process_manager import ProcessManager
 from prototype.adapter.proxy import DapProxy
 from prototype.adapter.state import ProcessSnapshot, ProxySessionState, SyntheticFrameRegistry
 
@@ -55,6 +59,18 @@ class SyntheticFrameRegistryTests(unittest.TestCase):
                 {},
                 expected_epoch=1,
             )
+
+    def test_process_epochs_preserve_sibling_current_frames(self) -> None:
+        registry = SyntheticFrameRegistry()
+        registry.begin_epoch(1, process_id=100)
+        first = registry.allocate(7, "python-0", {}, process_id=100)
+        registry.begin_epoch(2, process_id=200)
+        second = registry.allocate(8, "python-0", {}, process_id=200)
+
+        registry.clear_current(process_id=100)
+
+        self.assertEqual(registry.classify(first), "stale")
+        self.assertEqual(registry.classify(second), "current")
 
 
 class ProxySessionStateTests(unittest.TestCase):
@@ -121,6 +137,7 @@ class ProxySessionStateTests(unittest.TestCase):
                 stop_epoch=1,
                 is_stopped=True,
                 thread_ids=frozenset({4242, 4243}),
+                stopped_thread_ids=frozenset({4243}),
             ),
         )
 
@@ -137,6 +154,7 @@ class ProxySessionStateTests(unittest.TestCase):
             100,
             display_name="Python parent process",
             role="Python parent process",
+            command="rust-parent --mode process-thread",
         )
         state.bind_thread(100, 101, name="Main thread")
         state.register_process(
@@ -144,13 +162,16 @@ class ProxySessionStateTests(unittest.TestCase):
             parent_process_id=100,
             display_name="worker-A",
             role="Python child process",
+            command="python process_thread_worker.py process-A 20",
         )
-        state.bind_thread(200, 201, name="Worker A")
+        state.bind_thread(200, 201, name="process-A-worker-1")
+        state.bind_thread(200, 203, name="process-A-worker-2")
         state.register_process(
             201,
             parent_process_id=100,
             display_name="worker-B",
             role="Python child process",
+            command="python process_thread_worker.py process-B 40",
         )
         state.bind_thread(201, 202, name="Worker B")
 
@@ -160,12 +181,20 @@ class ProxySessionStateTests(unittest.TestCase):
         self.assertEqual(by_process[200]["parentProcessId"], 100)
         self.assertEqual(by_process[201]["parentProcessId"], 100)
         self.assertEqual(
+            by_process[200]["command"],
+            "python process_thread_worker.py process-A 20",
+        )
+        self.assertEqual(
             [thread["threadId"] for thread in by_process[100]["threads"]],
             [101],
         )
         self.assertEqual(
             [thread["threadId"] for thread in by_process[200]["threads"]],
-            [201],
+            [201, 203],
+        )
+        self.assertEqual(
+            [thread["name"] for thread in by_process[200]["threads"]],
+            ["process-A-worker-1", "process-A-worker-2"],
         )
         self.assertEqual(
             [thread["threadId"] for thread in by_process[201]["threads"]],
@@ -187,15 +216,155 @@ class ProxySessionStateTests(unittest.TestCase):
         self.assertEqual(tree[0]["threads"][0]["threadId"], 101)
         self.assertEqual(tree[0]["threads"][0]["name"], "Thread 101")
         self.assertTrue(tree[0]["threads"][0]["isStopped"])
+        self.assertEqual(tree[0]["command"], "command unavailable")
 
     def test_process_tree_uses_launch_metadata_for_native_process(self) -> None:
         state = ProxySessionState()
-        state.set_default_process_metadata("Python process", "Python process")
+        state.set_default_process_metadata(
+            "Python process",
+            "Python process",
+            "/workspace/.venv/bin/python tests/acceptance/threaded_fixture_driver.py",
+        )
         state.register_process(100)
 
         tree = state.process_tree()
         self.assertEqual(tree[0]["label"], "Python process")
         self.assertEqual(tree[0]["role"], "Python process")
+        self.assertEqual(
+            tree[0]["command"],
+            "/workspace/.venv/bin/python tests/acceptance/threaded_fixture_driver.py",
+        )
+
+    def test_process_tree_bounds_and_normalizes_explicit_command_metadata(self) -> None:
+        state = ProxySessionState()
+        state.register_process(
+            100,
+            command=f"python\nworker.py\t{'x' * MAX_PROCESS_COMMAND_LENGTH}",
+        )
+
+        command = state.process_tree()[0]["command"]
+        self.assertEqual(len(command), MAX_PROCESS_COMMAND_LENGTH)
+        self.assertNotIn("\n", command)
+        self.assertNotIn("\t", command)
+        self.assertTrue(command.endswith("..."))
+
+    def test_child_without_registry_command_does_not_inherit_parent_launch(self) -> None:
+        state = ProxySessionState()
+        state.set_default_process_metadata(
+            "Rust process",
+            "Rust process",
+            "rust-parent --mode process-thread",
+        )
+        state.register_process(100)
+        state.register_process(
+            200,
+            parent_process_id=100,
+            display_name="process-A",
+            role="Python child process",
+            inherit_default_metadata=False,
+        )
+
+        by_process = {item["processId"]: item for item in state.process_tree()}
+        self.assertEqual(by_process[100]["command"], "rust-parent --mode process-thread")
+        self.assertEqual(by_process[200]["command"], "command unavailable")
+
+    def test_child_threads_request_merges_two_native_names_into_tree(self) -> None:
+        class FakeTransport:
+            def start(self, *, process_id: int, breakpoints: object) -> None:
+                del process_id, breakpoints
+
+            def request(
+                self,
+                command: str,
+                arguments: object = None,
+            ) -> dict[str, object]:
+                del arguments
+                if command != "threads":
+                    raise AssertionError(f"unexpected request {command}")
+                return {
+                    "success": True,
+                    "body": {
+                        "threads": [
+                            {"id": 701, "name": "process-A-worker-1"},
+                            {"id": 702, "name": "process-A-worker-2"},
+                        ]
+                    },
+                }
+
+            def close(self) -> None:
+                pass
+
+        state = ProxySessionState()
+        with TemporaryDirectory() as directory:
+            registry = Path(directory)
+            (registry / "ready-700").touch()
+            (registry / "child-700.json").write_text(
+                (
+                    '{"pid":700,"parentPid":600,"label":"process-A",'
+                    '"role":"Python child process",'
+                    '"command":"python process_thread_worker.py process-A 20",'
+                    '"threads":['
+                    '{"threadId":701,"name":"process-A-worker-1"},'
+                    '{"threadId":702,"name":"process-A-worker-2"}'
+                    "]}"
+                ),
+                encoding="utf-8",
+            )
+            manager = ProcessManager(
+                registry_path=registry,
+                adapter_command=["fake-codelldb"],
+                cwd="/workspace",
+                state=state,
+                emit_event=lambda event, body: None,
+                transport_factory=lambda command, cwd, handler: FakeTransport(),
+            )
+            try:
+                manager._start_child(
+                    {
+                        "pid": 700,
+                        "parentPid": 600,
+                        "label": "process-A",
+                        "role": "Python child process",
+                        "command": "python process_thread_worker.py process-A 20",
+                    }
+                )
+                state.on_stopped(
+                    {"body": {"systemProcessId": 700, "threadId": 701}}
+                )
+
+                self.assertEqual(
+                    manager.threads(),
+                    [
+                        {"id": 701, "name": "process 700: process-A-worker-1"},
+                        {"id": 702, "name": "process 700: process-A-worker-2"},
+                    ],
+                )
+                child = next(
+                    process
+                    for process in state.process_tree()
+                    if process["processId"] == 700
+                )
+                self.assertEqual(
+                    [
+                        (thread["threadId"], thread["name"])
+                        for thread in child["threads"]
+                    ],
+                    [
+                        (701, "process-A-worker-1"),
+                        (702, "process-A-worker-2"),
+                    ],
+                )
+            finally:
+                manager.close()
+
+    def test_refreshing_child_threads_does_not_change_active_process(self) -> None:
+        state = ProxySessionState()
+        state.register_process(100)
+        state.register_process(200)
+        state.on_stopped({"body": {"systemProcessId": 100, "threadId": 101}})
+        self.assertEqual(state.process_id, 100)
+        state.bind_thread(200, 201, name="sibling", activate=False)
+        self.assertEqual(state.process_id, 100)
 
     def test_records_codelldb_launch_output_as_process_fallback(self) -> None:
         state = ProxySessionState()

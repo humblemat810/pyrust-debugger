@@ -87,9 +87,35 @@ PYTHONPATH=prototype/python .venv/bin/python -m unittest prototype.adapter.tests
 workers. Both paths show Rust and Python frames, independent Python and Rust
 expressions, child identity isolation, stale-frame invalidation, and cleanup.
 
+## Process and Thread Mode Criteria
+
+`./scripts/accept-process-thread-mode.sh` is the bounded black-box proof for
+the Rust parent fixture `rust-outer-python-process-threads`. It reports:
+
+- `AC-PTM-01`: one actual Rust parent PID and two distinct Python child PIDs
+  with the registry and `pyrust/processTree` parent links agreeing;
+- `AC-PTM-02`: two distinct native worker TIDs per child, with names preserved
+  beneath the owning child process;
+- `AC-PTM-03`: readable parent/child labels, roles, commands, PIDs, and
+  stopped/running states;
+- `AC-PTM-04`: a selected child stop with `rust_inner`, `rust_outer`, and
+  `python_worker`, with `rust_inner` at `lib.rs:6`;
+- `AC-PTM-05`: continuing one child invalidates only its selected synthetic
+  frame and does not resume or erase sibling worker state;
+- `AC-PTM-06`: the selected child subtree disappears while the parent and
+  sibling remain, followed by complete child cleanup;
+- `AC-PTM-07`: the process-tree payload remains a process/native-thread model
+  without task or future nodes, and the existing Python and Rust async
+  acceptance commands still pass.
+
+The proof uses only DAP responses and the fixture's bounded child registry.
+It does not enumerate arbitrary processes, add Python breakpoints, or create a
+nested DAP Threads hierarchy.
+
 ## Process Tree View
 
 The standard DAP Threads/Call Stack UI remains flat. The extension renders the
 coordinator-owned hierarchy in **PyRust Process Tree**. Automated coverage
 checks the `pyrust/processTree` response and extension tree model; human QC
-uses the [Process Tree Manual QC Guide](process-tree-manual.md).
+uses the [Process Tree Manual QC Guide](process-tree-manual.md) and the
+[Process and Threads Manual QC Guide](process-thread-mode-manual.md).

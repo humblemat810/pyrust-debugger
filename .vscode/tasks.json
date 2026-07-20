@@ -100,6 +100,30 @@
       "dependsOrder": "sequence"
     },
     {
+      "label": "PyRust: Build Rust Process and Threads",
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "build",
+        "--locked",
+        "--manifest-path",
+        "${workspaceFolder}/research/fixtures/rust_outer/Cargo.toml",
+        "--bin",
+        "rust-outer-python-process-threads"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PYO3_PYTHON": "${workspaceFolder}/.venv/bin/python"
+        }
+      },
+      "problemMatcher": [
+        "$rustc"
+      ],
+      "dependsOn": "PyRust: Ensure Debugger Extension",
+      "dependsOrder": "sequence"
+    },
+    {
       "label": "PyRust: Build Rust Async",
       "type": "process",
       "command": "cargo",

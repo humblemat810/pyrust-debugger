@@ -52,6 +52,29 @@ def _task_stop(
     thread_id = body.get("threadId") if isinstance(body, dict) else None
     if not isinstance(thread_id, int) or thread_id <= 0:
         raise DapError(f"async stopped event has no thread ID: {stopped}")
+    tree_request = client.send("pyrust/processTree")
+    processes = client.response(tree_request, timeout=10).get("body", {}).get(
+        "processes"
+    )
+    if not isinstance(processes, list):
+        raise DapError(f"async process tree was malformed: {processes}")
+    stopped_thread_found = False
+    for process in processes:
+        if not isinstance(process, dict):
+            raise DapError(f"async process tree item was malformed: {process}")
+        if any(key in process for key in ("tasks", "futures", "awaits", "children")):
+            raise DapError(f"async process tree invented task nesting: {process}")
+        if not isinstance(process.get("threads"), list):
+            raise DapError(f"async process tree lacked native threads: {process}")
+        for tree_thread in process["threads"]:
+            if not isinstance(tree_thread, dict):
+                raise DapError(f"async tree thread was malformed: {tree_thread}")
+            if any(key in tree_thread for key in ("children", "tasks", "futures", "awaits")):
+                raise DapError(f"async tree thread invented task nesting: {tree_thread}")
+            if tree_thread.get("threadId") == thread_id:
+                stopped_thread_found = tree_thread.get("isStopped") is True
+    if not stopped_thread_found:
+        raise DapError("async process tree omitted the stopped native thread")
 
     request = client.send(
         "stackTrace",

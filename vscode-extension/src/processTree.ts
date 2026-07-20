@@ -8,9 +8,10 @@ export interface PyRustThread {
 
 export interface PyRustProcess {
   processId: number;
-  parentProcessId?: number;
+  parentProcessId: number | null;
   label: string;
   role: string;
+  command: string;
   isActive: boolean;
   isStopped: boolean;
   threads: PyRustThread[];
@@ -28,7 +29,7 @@ export function rootProcesses(tree: PyRustProcessTree): PyRustProcess[] {
   const known = new Set(tree.processes.map((process) => process.processId));
   return tree.processes.filter(
     (process) =>
-      process.parentProcessId === undefined ||
+      process.parentProcessId === null ||
       !known.has(process.parentProcessId),
   );
 }
@@ -40,6 +41,30 @@ export function childProcesses(
   return tree.processes.filter(
     (process) => process.parentProcessId === processId,
   );
+}
+
+export function processDescription(process: PyRustProcess): string {
+  return [
+    process.role,
+    process.isStopped ? "stopped" : "running",
+    `command: ${process.command}`,
+  ].join(" | ");
+}
+
+export function processTreeChildren(
+  tree: PyRustProcessTree,
+  process: PyRustProcess,
+): ProcessTreeNode[] {
+  const threads: ProcessTreeNode[] = process.threads.map((thread) => ({
+    kind: "thread",
+    process,
+    thread,
+  }));
+  const children: ProcessTreeNode[] = childProcesses(
+    tree,
+    process.processId,
+  ).map((child) => ({ kind: "process", process: child }));
+  return [...threads, ...children];
 }
 
 export class PyRustProcessTreeProvider
@@ -86,10 +111,13 @@ export class PyRustProcessTreeProvider
         `${node.process.label} (pid ${node.process.processId})`,
         vscode.TreeItemCollapsibleState.Expanded,
       );
-      item.description = [
+      item.description = processDescription(node.process);
+      item.tooltip = [
         node.process.role,
-        node.process.isStopped ? "stopped" : "running",
-      ].join(" | ");
+        `PID: ${node.process.processId}`,
+        `State: ${node.process.isStopped ? "stopped" : "running"}`,
+        `Command: ${node.process.command}`,
+      ].join("\n");
       item.contextValue = "pyrustProcess";
       item.iconPath = new vscode.ThemeIcon(
         node.process.isStopped ? "debug-pause" : "vm",
@@ -102,6 +130,11 @@ export class PyRustProcessTreeProvider
       vscode.TreeItemCollapsibleState.None,
     );
     item.description = node.thread.isStopped ? "stopped" : "running";
+    item.tooltip = [
+      node.thread.name,
+      `TID: ${node.thread.threadId}`,
+      `State: ${node.thread.isStopped ? "stopped" : "running"}`,
+    ].join("\n");
     item.contextValue = "pyrustThread";
     item.iconPath = new vscode.ThemeIcon(
       node.thread.isStopped ? "debug-pause" : "debug-stackframe",
@@ -124,16 +157,7 @@ export class PyRustProcessTreeProvider
     if (node.kind === "thread") {
       return [];
     }
-    const threads: ProcessTreeNode[] = node.process.threads.map((thread) => ({
-      kind: "thread",
-      process: node.process,
-      thread,
-    }));
-    const children: ProcessTreeNode[] = childProcesses(
-      this.tree,
-      node.process.processId,
-    ).map((process) => ({ kind: "process", process }));
-    return [...threads, ...children];
+    return processTreeChildren(this.tree, node.process);
   }
 }
 

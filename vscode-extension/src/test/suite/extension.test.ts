@@ -3,6 +3,9 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import {
   childProcesses,
+  processDescription,
+  processTreeChildren,
+  PyRustProcessTreeProvider,
   rootProcesses,
   type PyRustProcessTree,
 } from "../../processTree";
@@ -157,8 +160,10 @@ export function runProcessTreeModelTest(): void {
     processes: [
       {
         processId: 100,
+        parentProcessId: null,
         label: "Python parent process",
         role: "Python parent process",
+        command: "rust-parent --mode process-thread",
         isActive: true,
         isStopped: false,
         threads: [{ threadId: 101, name: "Main thread", isStopped: false }],
@@ -168,15 +173,28 @@ export function runProcessTreeModelTest(): void {
         parentProcessId: 100,
         label: "worker-A",
         role: "Python child process",
+        command: "python process_thread_worker.py process-A 20",
         isActive: false,
         isStopped: true,
-        threads: [{ threadId: 201, name: "Main thread", isStopped: true }],
+        threads: [
+          {
+            threadId: 201,
+            name: "process-A-worker-1",
+            isStopped: true,
+          },
+          {
+            threadId: 203,
+            name: "process-A-worker-2",
+            isStopped: true,
+          },
+        ],
       },
       {
         processId: 201,
         parentProcessId: 100,
         label: "worker-B",
         role: "Python child process",
+        command: "python process_thread_worker.py process-B 40",
         isActive: false,
         isStopped: false,
         threads: [{ threadId: 202, name: "Main thread", isStopped: false }],
@@ -193,4 +211,46 @@ export function runProcessTreeModelTest(): void {
     [200, 201],
   );
   assert.deepStrictEqual(childProcesses(tree, 200), []);
+
+  const parent = tree.processes[0];
+  assert.strictEqual(
+    processDescription(parent),
+    "Python parent process | running | command: rust-parent --mode process-thread",
+  );
+  assert.deepStrictEqual(
+    processTreeChildren(tree, parent).map((node) =>
+      node.kind === "thread"
+        ? `thread:${node.thread.threadId}`
+        : `process:${node.process.processId}`,
+    ),
+    ["thread:101", "process:200", "process:201"],
+  );
+
+  const workerA = tree.processes[1];
+  const workerChildren = processTreeChildren(tree, workerA);
+  assert.deepStrictEqual(
+    workerChildren.map((node) =>
+      node.kind === "thread"
+        ? `thread:${node.thread.threadId}`
+        : `process:${node.process.processId}`,
+    ),
+    ["thread:201", "thread:203"],
+  );
+
+  const provider = new PyRustProcessTreeProvider();
+  const processItem = provider.getTreeItem({ kind: "process", process: workerA });
+  assert.strictEqual(processItem.label, "worker-A (pid 200)");
+  assert.strictEqual(
+    processItem.description,
+    "Python child process | stopped | command: python process_thread_worker.py process-A 20",
+  );
+
+  const threadNode = workerChildren[0];
+  assert.strictEqual(threadNode.kind, "thread");
+  if (threadNode.kind !== "thread") {
+    throw new Error("worker-A direct child was not a native thread");
+  }
+  const threadItem = provider.getTreeItem(threadNode);
+  assert.strictEqual(threadItem.label, "process-A-worker-1 (tid 201)");
+  assert.strictEqual(threadItem.description, "stopped");
 }

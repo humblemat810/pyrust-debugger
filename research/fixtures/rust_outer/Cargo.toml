@@ -20,5 +20,9 @@ name = "rust-outer-python-processes"
 path = "src/process_main.rs"
 
 [[bin]]
+name = "rust-outer-python-process-threads"
+path = "src/process_thread_main.rs"
+
+[[bin]]
 name = "rust-outer-python-async"
 path = "src/async_main.rs"

@@ -1,0 +1,28 @@
+name = "process_thread_presentation_builder"
+description = "Adds command-aware process/thread tree data and renders it without faking DAP nesting."
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
+developer_instructions = """
+Own prototype/adapter/coordinator.py, prototype/adapter/state.py,
+prototype/adapter/process_manager.py, prototype/adapter/proxy.py,
+prototype/adapter/mixed_stack.py, prototype/adapter/tests/test_state.py,
+vscode-extension/src/processTree.ts, vscode-extension/src/extension.ts, and
+vscode-extension/src/test/suite/**.
+
+Read .codex/goals/process-thread-mode.md and ADR 0007 before editing. Follow
+the root agent's recorded pyrust/processTree payload contract exactly.
+
+Extend process metadata with a bounded command summary sourced only from DAP
+launch arguments or the child registry. Render PID and command summary on each
+process node. Keep known native threads directly under their owning process,
+including TID, adapter-provided name when available, and stopped state.
+
+Do not alter the standard DAP threads or Call Stack hierarchy. Do not invent
+async task nodes, infer ancestry from scheduling, read arbitrary process memory,
+or add debugpy. Preserve child lifecycle cleanup and thread focus behavior.
+
+Add focused unit/model tests. Do not edit fixtures, Cargo manifests, VS Code
+launch/tasks, scripts, acceptance suites, ADRs, or manual documentation. Do
+not commit. Report changed files, tests, payload assumptions, and risks.
+"""
+nickname_candidates = ["TreeContract", "Topology", "ProcessLens"]

@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import re
 from threading import Lock
 from typing import Any, Hashable, Iterable, Literal
 
-from .coordinator import CoordinationError, ProcessCoordinator
+from .coordinator import (
+    CoordinationError,
+    PROCESS_COMMAND_UNAVAILABLE,
+    ProcessCoordinator,
+    bounded_process_command,
+)
 
 MAX_DAP_ID = 2_147_483_647
 
@@ -16,6 +22,7 @@ MAX_DAP_ID = 2_147_483_647
 class SyntheticFrame:
     frame_id: int
     epoch: int
+    process_id: int | None
     thread_id: int
     key: Hashable
     value: Any
@@ -29,6 +36,8 @@ class ProcessSnapshot:
     stop_epoch: int
     is_stopped: bool
     thread_ids: frozenset[int]
+    stopped_thread_ids: frozenset[int] = frozenset()
+    all_threads_stopped: bool = False
 
 
 class SyntheticFrameRegistry:
@@ -37,8 +46,9 @@ class SyntheticFrameRegistry:
     def __init__(self) -> None:
         self._lock = Lock()
         self._epoch = 0
+        self._process_epochs: dict[int | None, int] = {}
         self._next_id = MAX_DAP_ID
-        self._by_key: dict[tuple[int, Hashable], SyntheticFrame] = {}
+        self._by_key: dict[tuple[int | None, int, Hashable], SyntheticFrame] = {}
         self._by_id: dict[int, SyntheticFrame] = {}
         self._issued_ids: set[int] = set()
         self._reserved_native_ids: set[int] = set()
@@ -48,17 +58,27 @@ class SyntheticFrameRegistry:
         with self._lock:
             return self._epoch
 
-    def begin_epoch(self, epoch: int) -> None:
+    def begin_epoch(
+        self,
+        epoch: int,
+        *,
+        process_id: int | None = None,
+        thread_id: int | None = None,
+    ) -> None:
         with self._lock:
             self._epoch = epoch
-            self._by_key.clear()
-            self._by_id.clear()
+            self._process_epochs[process_id] = epoch
+            self._discard_current_process(process_id, thread_id)
             self._reserved_native_ids.clear()
 
-    def clear_current(self) -> None:
+    def clear_current(
+        self,
+        *,
+        process_id: int | None = None,
+        thread_id: int | None = None,
+    ) -> None:
         with self._lock:
-            self._by_key.clear()
-            self._by_id.clear()
+            self._discard_current_process(process_id, thread_id)
             self._reserved_native_ids.clear()
 
     def reserve_native_ids(self, frame_ids: Iterable[int]) -> None:
@@ -73,15 +93,17 @@ class SyntheticFrameRegistry:
         *,
         native_frame_ids: Iterable[int] = (),
         expected_epoch: int | None = None,
+        process_id: int | None = None,
     ) -> int:
         with self._lock:
-            if expected_epoch is not None and self._epoch != expected_epoch:
+            active_epoch = self._process_epochs.get(process_id, self._epoch)
+            if expected_epoch is not None and active_epoch != expected_epoch:
                 raise RuntimeError(
-                    f"synthetic frame epoch changed from {expected_epoch} "
-                    f"to {self._epoch}"
+                    f"synthetic frame epoch changed from {expected_epoch} to "
+                    f"{active_epoch}"
                 )
             self._reserved_native_ids.update(native_frame_ids)
-            lookup_key = (thread_id, key)
+            lookup_key = (process_id, thread_id, key)
             existing = self._by_key.get(lookup_key)
             if existing is not None:
                 return existing.frame_id
@@ -89,7 +111,8 @@ class SyntheticFrameRegistry:
             frame_id = self._allocate_id()
             frame = SyntheticFrame(
                 frame_id=frame_id,
-                epoch=self._epoch,
+                epoch=active_epoch,
+                process_id=process_id,
                 thread_id=thread_id,
                 key=key,
                 value=value,
@@ -98,6 +121,21 @@ class SyntheticFrameRegistry:
             self._by_id[frame_id] = frame
             self._issued_ids.add(frame_id)
             return frame_id
+
+    def _discard_current_process(
+        self,
+        process_id: int | None,
+        thread_id: int | None,
+    ) -> None:
+        frame_ids = [
+            frame_id
+            for frame_id, frame in self._by_id.items()
+            if frame.process_id == process_id
+            and (thread_id is None or frame.thread_id == thread_id)
+        ]
+        for frame_id in frame_ids:
+            frame = self._by_id.pop(frame_id)
+            self._by_key.pop((frame.process_id, frame.thread_id, frame.key), None)
 
     def get(self, frame_id: int) -> SyntheticFrame | None:
         with self._lock:
@@ -140,6 +178,7 @@ class ProxySessionState:
         self._active_process_id: int | None = None
         self._default_process_name: str | None = None
         self._default_process_role: str | None = None
+        self._default_process_command: str | None = None
         self._processes: dict[int, ProcessSnapshot] = {}
         self._thread_processes: dict[int, int] = {}
         self.coordinator = coordinator or ProcessCoordinator()
@@ -187,12 +226,18 @@ class ProxySessionState:
         if match:
             self.register_process(int(match.group(1)))
 
-    def set_default_process_metadata(self, label: str, role: str) -> None:
+    def set_default_process_metadata(
+        self,
+        label: str,
+        role: str,
+        command: str | None = None,
+    ) -> None:
         """Use launch metadata until the native adapter reports a process ID."""
 
         with self._lock:
             self._default_process_name = label
             self._default_process_role = role
+            self._default_process_command = bounded_process_command(command)
 
     def register_process(
         self,
@@ -201,12 +246,27 @@ class ProxySessionState:
         parent_process_id: int | None = None,
         display_name: str | None = None,
         role: str | None = None,
+        command: str | None = None,
+        inherit_default_metadata: bool = True,
     ) -> None:
         if not _valid_id(process_id):
             return
         with self._lock:
-            label = display_name or self._default_process_name
-            process_role = role or self._default_process_role
+            label = display_name or (
+                self._default_process_name if inherit_default_metadata else None
+            )
+            process_role = role or (
+                self._default_process_role if inherit_default_metadata else None
+            )
+            process_command = (
+                command
+                if command is not None
+                else (
+                    self._default_process_command
+                    if inherit_default_metadata
+                    else None
+                )
+            )
             existing = self._processes.get(process_id)
             self._processes[process_id] = existing or ProcessSnapshot(
                 process_id=process_id,
@@ -221,6 +281,7 @@ class ProxySessionState:
             engine="native",
             display_name=label,
             role=process_role,
+            command=process_command,
         )
 
     def record_threads_response(self, response: dict[str, Any]) -> None:
@@ -248,6 +309,7 @@ class ProxySessionState:
         thread_id: int,
         *,
         name: str | None = None,
+        activate: bool = True,
     ) -> None:
         if not _valid_id(process_id) or not _valid_id(thread_id):
             return
@@ -265,9 +327,16 @@ class ProxySessionState:
                 stop_epoch=existing.stop_epoch,
                 is_stopped=existing.is_stopped,
                 thread_ids=existing.thread_ids | {thread_id},
+                stopped_thread_ids=(
+                    existing.stopped_thread_ids | {thread_id}
+                    if existing.all_threads_stopped
+                    else existing.stopped_thread_ids
+                ),
+                all_threads_stopped=existing.all_threads_stopped,
             )
             self._thread_processes[thread_id] = process_id
-            self._active_process_id = process_id
+            if activate:
+                self._active_process_id = process_id
         self.coordinator.bind_native_thread(process_id, thread_id, name=name)
 
     def process_id_for_thread(self, thread_id: int) -> int | None:
@@ -299,6 +368,7 @@ class ProxySessionState:
                     "label": session.display_name
                     or f"Process {session.process_id}",
                     "role": session.role or "native process",
+                    "command": session.command or PROCESS_COMMAND_UNAVAILABLE,
                     "isActive": session.process_id == active_process_id,
                     "isStopped": bool(snapshot and snapshot.is_stopped),
                     "threads": [
@@ -314,11 +384,10 @@ class ProxySessionState:
                             ),
                             "isStopped": bool(
                                 snapshot
-                                and snapshot.is_stopped
-                                and self.coordinator.execution_owner(
-                                    session.process_id
+                                and (
+                                    snapshot.all_threads_stopped
+                                    or thread_id in snapshot.stopped_thread_ids
                                 )
-                                == "native"
                             ),
                         }
                         for thread_id in sorted(thread_ids)
@@ -333,7 +402,7 @@ class ProxySessionState:
             return False
         with self._lock:
             snapshot = self._processes.get(process_id)
-            return bool(snapshot and snapshot.is_stopped)
+            return bool(snapshot and thread_id in snapshot.stopped_thread_ids)
 
     def remove_process(self, process_id: int) -> None:
         """Forget one child without disrupting unrelated process sessions."""
@@ -372,6 +441,17 @@ class ProxySessionState:
                     else self._active_process_id
                 )
             )
+            if process_id is None and _valid_id(thread_id):
+                # A direct CodeLLDB launch can stop before emitting either a
+                # process event or launch-output PID. The stopped DAP thread
+                # remains the only authoritative identity in that narrow gap.
+                process_id = _thread_group_id(thread_id) or thread_id
+                self._processes[process_id] = ProcessSnapshot(
+                    process_id=process_id,
+                    stop_epoch=0,
+                    is_stopped=False,
+                    thread_ids=frozenset(),
+                )
             if process_id is not None:
                 existing = self._processes.get(process_id)
                 self._processes[process_id] = ProcessSnapshot(
@@ -387,19 +467,45 @@ class ProxySessionState:
                             else (existing.thread_ids if existing else frozenset())
                         )
                     ),
+                    stopped_thread_ids=(
+                        existing.stopped_thread_ids | {thread_id}
+                        if existing is not None and _valid_id(thread_id)
+                        else (
+                            frozenset({thread_id})
+                            if _valid_id(thread_id)
+                            else (
+                                existing.stopped_thread_ids
+                                if existing
+                                else frozenset()
+                            )
+                        )
+                    ),
+                    all_threads_stopped=bool(
+                        (event.get("body") or {}).get("allThreadsStopped")
+                        if event
+                        else False
+                    ),
                 )
                 if _valid_id(thread_id):
                     self._thread_processes[thread_id] = process_id
                 self._active_process_id = process_id
         if process_id is not None and _valid_id(thread_id):
             try:
+                self.coordinator.register_process(process_id, engine="native")
                 self.coordinator.bind_native_thread(process_id, thread_id)
                 self.coordinator.acquire_stop(process_id, thread_id, "native")
             except CoordinationError:
                 # A future Python-owned stop must not be overwritten by a
                 # native event. The hook will fall back rather than guessing.
                 pass
-        self.synthetic_frames.begin_epoch(epoch)
+        self.synthetic_frames.begin_epoch(
+            epoch,
+            process_id=process_id,
+            thread_id=thread_id if _valid_id(thread_id) else None,
+        )
+        # Older hook tests and third-party hooks can still allocate frames
+        # without an owning process. Keep that legacy namespace epoch-scoped.
+        self.synthetic_frames.begin_epoch(epoch, process_id=None)
         return epoch
 
     def on_continued(self, event: dict[str, Any] | None = None) -> None:
@@ -419,11 +525,27 @@ class ProxySessionState:
             )
             if process_id is not None and process_id in self._processes:
                 existing = self._processes[process_id]
+                all_threads_continued = bool(
+                    (event.get("body") or {}).get("allThreadsContinued")
+                    if event
+                    else False
+                )
+                stopped_thread_ids = (
+                    frozenset()
+                    if all_threads_continued or not _valid_id(thread_id)
+                    else (
+                        existing.thread_ids - {thread_id}
+                        if existing.all_threads_stopped
+                        else existing.stopped_thread_ids - {thread_id}
+                    )
+                )
                 self._processes[process_id] = ProcessSnapshot(
                     process_id=process_id,
                     stop_epoch=existing.stop_epoch,
-                    is_stopped=False,
+                    is_stopped=bool(stopped_thread_ids),
                     thread_ids=existing.thread_ids,
+                    stopped_thread_ids=stopped_thread_ids,
+                    all_threads_stopped=False,
                 )
             self._is_stopped = any(
                 snapshot.is_stopped for snapshot in self._processes.values()
@@ -433,7 +555,11 @@ class ProxySessionState:
                 self.coordinator.release_stop(process_id, "native")
             except CoordinationError:
                 pass
-        self.synthetic_frames.clear_current()
+        self.synthetic_frames.clear_current(
+            process_id=process_id,
+            thread_id=thread_id if _valid_id(thread_id) else None,
+        )
+        self.synthetic_frames.clear_current(process_id=None)
 
     def on_terminated(self, event: dict[str, Any] | None = None) -> None:
         process_id = (
@@ -456,11 +582,28 @@ class ProxySessionState:
                 self._thread_processes.clear()
         if _valid_id(process_id):
             self.remove_process(process_id)
+            self.synthetic_frames.clear_current(process_id=process_id)
         else:
             for registered_process_id in self.coordinator.process_ids():
                 self.coordinator.remove_process(registered_process_id)
-        self.synthetic_frames.clear_current()
+        if not _valid_id(process_id):
+            self.synthetic_frames.clear_current()
 
 
 def _valid_id(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _thread_group_id(thread_id: int) -> int | None:
+    """Resolve a Linux native thread to its process leader without guessing."""
+
+    try:
+        for line in Path(f"/proc/{thread_id}/status").read_text(
+            encoding="utf-8"
+        ).splitlines():
+            if line.startswith("Tgid:"):
+                value = int(line.partition(":")[2].strip())
+                return value if value > 0 else None
+    except (OSError, ValueError):
+        return None
+    return None

@@ -143,19 +143,24 @@ class ChildCodelldbTransport:
     def _wait_for_request(self, sequence: int) -> Message:
         with self._pending_lock:
             pending = self._pending.get(sequence)
-        assert pending is not None
+        if pending is None:
+            raise ChildTransportError(
+                f"child CodeLLDB request {sequence} was not registered"
+            )
         if not pending.complete.wait(self._timeout):
             with self._pending_lock:
                 self._pending.pop(sequence, None)
             raise ChildTransportError(
-                f"child CodeLLDB {command!r} request timed out after "
+                f"child CodeLLDB {pending.command!r} request timed out after "
                 f"{self._timeout:.1f} seconds"
             )
+        with self._pending_lock:
+            self._pending.pop(sequence, None)
         if pending.error is not None:
             raise ChildTransportError(str(pending.error)) from pending.error
         if pending.response is None:
             raise ChildTransportError(
-                f"child CodeLLDB {command!r} completed without a response"
+                f"child CodeLLDB {pending.command!r} completed without a response"
             )
         if pending.response.get("success") is not True:
             raise ChildTransportError(
@@ -213,7 +218,7 @@ class ChildCodelldbTransport:
                     sequence = message.get("request_seq")
                     if isinstance(sequence, int):
                         with self._pending_lock:
-                            pending = self._pending.pop(sequence, None)
+                            pending = self._pending.get(sequence)
                         if pending is not None:
                             pending.response = message
                             pending.complete.set()

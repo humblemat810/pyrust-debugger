@@ -11,6 +11,7 @@
 - [ADR 0005: Read-only Python frame locals](decisions/0005-read-only-python-frame-locals.md)
 - [ADR 0006: Process-tree coordinator](decisions/0006-process-tree-coordinator.md)
 - [ADR 0007: Process-tree view](decisions/0007-process-tree-view.md)
+- [ADR 0008: Process and thread mode contract](decisions/0008-process-thread-mode-contract.md)
 - [Feasibility summary](feasibility.md)
 
 ## Research reports
@@ -35,6 +36,7 @@
 - [Python frame locals acceptance](acceptance/python-frame-locals.md)
 - [Process-tree coordinator acceptance](acceptance/process-tree-coordinator.md)
 - [Process-tree manual QC guide](acceptance/process-tree-manual.md)
+- [Process and threads manual QC guide](acceptance/process-thread-mode-manual.md)
 - [Async coordinator acceptance](acceptance/async-coordinator.md)
 - [Test strategy](test-plan.md)
 - [Risk register](risk-register.md)

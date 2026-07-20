@@ -172,6 +172,10 @@ class ProcessManagerTests(unittest.TestCase):
             manager.continue_thread(701)
             self.assertIsNone(manager.native_frame_route(frame_id))
             self.assertTrue(created[0].calls[-1][0] == "continue")
+            self.assertEqual(
+                created[0].calls[-1][1],
+                {"threadId": 701, "singleThread": False},
+            )
             created[0].event_handler(
                 {
                     "type": "event",
@@ -198,6 +202,48 @@ class ProcessManagerTests(unittest.TestCase):
                 ("terminated", {"systemProcessId": 700}),
             ],
         )
+
+    def test_terminated_child_is_not_reattached_from_stale_registry_record(self) -> None:
+        state = ProxySessionState()
+        created: list[FakeChildTransport] = []
+        with TemporaryDirectory() as directory:
+            registry = Path(directory)
+
+            def factory(
+                command: Sequence[str],
+                cwd: str,
+                event_handler: Callable[[Message], None],
+            ) -> FakeChildTransport:
+                transport = FakeChildTransport(event_handler)
+                created.append(transport)
+                return transport
+
+            manager = ProcessManager(
+                registry_path=registry,
+                adapter_command=["fake-codelldb"],
+                cwd="/workspace",
+                state=state,
+                emit_event=lambda event, body: None,
+                transport_factory=factory,
+            )
+            manager.add_breakpoints(
+                {
+                    "source": {"path": "/workspace/lib.rs"},
+                    "breakpoints": [{"line": 6}],
+                }
+            )
+            manager.mark_configuration_done()
+            (registry / "ready-700").touch()
+            record = {"pid": 700, "parentPid": 600}
+            manager._start_child(record)
+            created[0].event_handler(
+                {"type": "event", "event": "terminated", "body": {}}
+            )
+
+            manager._start_child(record)
+
+            self.assertEqual(len(created), 1)
+            manager.close()
 
     def test_failed_attach_removes_the_partial_process_state(self) -> None:
         state = ProxySessionState()

@@ -131,6 +131,23 @@
       "pyrustChildRegistryPath": "${workspaceFolder}/.pyrust-child-registry",
       "pyrustProcessMode": "children",
       "preLaunchTask": "PyRust: Build Rust Processes"
+    },
+    {
+      "type": "pyrust",
+      "request": "launch",
+      "name": "PyRust: Process and Threads",
+      "program": "${env:CARGO_TARGET_DIR}/debug/rust-outer-python-process-threads",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYRUST_CHILD_REGISTRY": "${workspaceFolder}/.pyrust-child-registry",
+        "PYRUST_PYTHON": "${workspaceFolder}/.venv/bin/python",
+        "PYRUST_PROCESS_THREAD_WORKER": "${workspaceFolder}/tests/acceptance/process_thread_worker.py"
+      },
+      "pyrustChildRegistryPath": "${workspaceFolder}/.pyrust-child-registry",
+      "pyrustProcessMode": "children",
+      "pyrustThreadMode": "single",
+      "preLaunchTask": "PyRust: Build Rust Process and Threads"
     }
   ]
 }

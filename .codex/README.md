@@ -1,7 +1,8 @@
 # Codex Agent Layout
 
 These project-scoped agents support the implemented first workable slice in
-ADR 0002 and the stabilization and reverse-direction slice in ADR 0003.
+ADR 0002, the stabilization and reverse-direction slice in ADR 0003, and the
+process-and-thread presentation slice defined by ADR 0007.
 
 ## Parent Goal Mode
 
@@ -40,6 +41,15 @@ ADR 0003:
 | `reverse_acceptance_builder` | `gpt-5.6-luna` | Medium | Reverse acceptance files and command | Black-box reverse proof |
 | `reverse_slice_reviewer` | `gpt-5.6-sol` | Extra High (`xhigh`) | Read-heavy whole-repository review | Independent ADR 0003 audit |
 
+Process-and-thread mode:
+
+| Agent | Model | Effort | Ownership | Purpose |
+| --- | --- | --- | --- | --- |
+| `process_thread_presentation_builder` | `gpt-5.6-sol` | Extra High (`xhigh`) | Adapter state plus extension tree | PID/command metadata and real process/thread presentation |
+| `process_thread_fixture_builder` | `gpt-5.6-terra` | High | Rust fixture plus dedicated Python worker | Rust parent, Python children, two worker threads per child |
+| `process_thread_acceptance_builder` | `gpt-5.6-luna` | High | Launch/task wiring, new acceptance, manual QC | Black-box proof and operator workflow |
+| `process_thread_mode_reviewer` | `gpt-5.6-sol` | Extra High (`xhigh`) | Read-heavy whole-repository review | Independent topology and regression audit |
+
 The custom-agent TOML files pin these models. In configuration files, the UI
 label **Extra High** is written as `model_reasoning_effort = "xhigh"`.
 
@@ -77,11 +87,23 @@ ADR 0003 uses two serial gates:
 3. Integrate and pass both acceptance commands.
 4. Run `reverse_slice_reviewer`, fix findings, and rerun both commands.
 
+Process-and-thread mode uses one contract gate:
+
+1. The root agent records the `pyrust/processTree` payload before agents edit.
+2. Run `process_thread_presentation_builder` and
+   `process_thread_fixture_builder` in parallel.
+3. Integrate their contract before starting `process_thread_acceptance_builder`.
+4. Run the new acceptance command and every existing slice command.
+5. Run `process_thread_mode_reviewer`, fix findings, and rerun the complete
+   command set.
+
 ## Reusable Goals
 
 - `goals/first-workable-slice.md` reproduces the ADR 0002 implementation goal.
 - `goals/rust-outer-stabilization.md` reproduces the ADR 0003 stabilization
   and reverse-direction proof.
+- `goals/process-thread-mode.md` drives the Rust-parent, Python-child,
+  thread-enabled process-tree slice.
 
 The files under `.codex/goals` are reusable prompts, not automatically loaded
 configuration.
