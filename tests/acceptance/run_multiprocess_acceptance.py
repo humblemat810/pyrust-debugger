@@ -120,6 +120,31 @@ def _child_stop(
     return process_id, thread_id, label, value
 
 
+def _assert_process_tree(
+    client: DapClient,
+    *,
+    expected_parent: int,
+    child_processes: set[int],
+) -> None:
+    request = client.send("pyrust/processTree")
+    processes = client.response(request, timeout=10).get("body", {}).get("processes")
+    if not isinstance(processes, list):
+        raise DapError(f"process-tree payload was malformed: {processes}")
+    by_pid = {
+        item.get("processId"): item
+        for item in processes
+        if isinstance(item, dict) and isinstance(item.get("processId"), int)
+    }
+    if expected_parent not in by_pid:
+        raise DapError(f"process tree omitted parent {expected_parent}: {processes}")
+    for child_process in child_processes:
+        child = by_pid.get(child_process)
+        if not isinstance(child, dict) or child.get("parentProcessId") != expected_parent:
+            raise DapError(
+                f"process tree did not nest child {child_process}: {processes}"
+            )
+
+
 def two_child_happy_path() -> None:
     with TemporaryDirectory(prefix="pyrust-child-registry-") as directory:
         registry = Path(directory)
@@ -127,6 +152,19 @@ def two_child_happy_path() -> None:
         try:
             first_process, first_thread, first_label, first_value = _child_stop(
                 client, first_stop
+            )
+            registry_records = list(registry.glob("child-*.json"))
+            if len(registry_records) != 2:
+                raise DapError(f"fixture did not register two children: {registry_records}")
+            expected_parent = __import__("json").loads(
+                registry_records[0].read_text(encoding="utf-8")
+            )["parentPid"]
+            _assert_process_tree(
+                client,
+                expected_parent=expected_parent,
+                child_processes={
+                    int(record.stem.partition("-")[2]) for record in registry_records
+                },
             )
             first_frames_request = client.send(
                 "stackTrace",

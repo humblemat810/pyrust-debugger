@@ -96,6 +96,10 @@ class MixedStackHooks(ProxyHooks):
             )
         if process_mode == "children":
             _prepare_child_registry(Path(child_registry))
+        program = arguments.get("program")
+        process_metadata = (
+            _launch_process_metadata(program) if isinstance(program, str) else None
+        )
 
         with self._lock:
             self._helper_command = helper_command
@@ -103,6 +107,8 @@ class MixedStackHooks(ProxyHooks):
             self._stopped_thread_id = None
             self._diagnosed_epochs.clear()
             self._child_only_mode = process_mode == "children"
+            if process_metadata is not None:
+                context.state.set_default_process_metadata(*process_metadata)
             if self._process_manager is not None:
                 self._process_manager.close()
                 self._process_manager = None
@@ -112,7 +118,16 @@ class MixedStackHooks(ProxyHooks):
                     arguments,
                     context,
                 )
-                context.state.register_process(self._child_only_process.pid)
+                parent_role = (
+                    f"{process_metadata[1]} parent process"
+                    if process_metadata is not None
+                    else "Rust parent process"
+                )
+                context.state.register_process(
+                    self._child_only_process.pid,
+                    display_name=parent_role,
+                    role=parent_role,
+                )
             if child_registry is not None:
                 self._process_manager = ProcessManager(
                     registry_path=Path(child_registry),
@@ -235,6 +250,14 @@ class MixedStackHooks(ProxyHooks):
         if self._child_only_mode:
             return LocalResponse(body={})
         return None
+
+    def on_process_tree(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse:
+        del request
+        return LocalResponse(body={"processes": context.state.process_tree()})
 
     def on_scopes(
         self,
@@ -903,8 +926,14 @@ class MixedStackHooks(ProxyHooks):
 
         def wait_for_parent() -> None:
             exit_code = process.wait()
+            context.state.on_terminated(
+                {"body": {"systemProcessId": process.pid}}
+            )
             context.send_event("exited", {"exitCode": exit_code})
-            context.send_event("terminated", {})
+            context.send_event(
+                "terminated",
+                {"systemProcessId": process.pid},
+            )
 
         Thread(
             target=wait_for_parent,
@@ -1101,6 +1130,15 @@ def _terminate_process(process: subprocess.Popen[bytes]) -> None:
     except subprocess.TimeoutExpired:
         process.kill()
         process.wait(timeout=2)
+
+
+def _launch_process_metadata(program: object) -> tuple[str, str]:
+    """Infer the direct launch language without inspecting child process names."""
+
+    executable = Path(str(program)).name.lower()
+    language = "Python" if executable.startswith("python") else "Rust"
+    role = f"{language} process"
+    return role, role
 
 
 def _prepare_child_registry(path: Path) -> None:

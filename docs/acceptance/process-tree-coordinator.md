@@ -86,3 +86,10 @@ PYTHONPATH=prototype/python .venv/bin/python -m unittest prototype.adapter.tests
 `AC-RMP-01` through `AC-RMP-05` pass for a Rust parent launching Python child
 workers. Both paths show Rust and Python frames, independent Python and Rust
 expressions, child identity isolation, stale-frame invalidation, and cleanup.
+
+## Process Tree View
+
+The standard DAP Threads/Call Stack UI remains flat. The extension renders the
+coordinator-owned hierarchy in **PyRust Process Tree**. Automated coverage
+checks the `pyrust/processTree` response and extension tree model; human QC
+uses the [Process Tree Manual QC Guide](process-tree-manual.md).

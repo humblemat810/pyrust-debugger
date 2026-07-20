@@ -10,6 +10,7 @@
 - [ADR 0004: Containerized VS Code validation](decisions/0004-containerized-vscode-validation.md)
 - [ADR 0005: Read-only Python frame locals](decisions/0005-read-only-python-frame-locals.md)
 - [ADR 0006: Process-tree coordinator](decisions/0006-process-tree-coordinator.md)
+- [ADR 0007: Process-tree view](decisions/0007-process-tree-view.md)
 - [Feasibility summary](feasibility.md)
 
 ## Research reports
@@ -33,6 +34,7 @@
 - [Containerized VS Code manual verification](acceptance/containerized-vscode-manual.md)
 - [Python frame locals acceptance](acceptance/python-frame-locals.md)
 - [Process-tree coordinator acceptance](acceptance/process-tree-coordinator.md)
+- [Process-tree manual QC guide](acceptance/process-tree-manual.md)
 - [Async coordinator acceptance](acceptance/async-coordinator.md)
 - [Test strategy](test-plan.md)
 - [Risk register](risk-register.md)

@@ -1,6 +1,11 @@
 import * as assert from "node:assert";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import {
+  childProcesses,
+  rootProcesses,
+  type PyRustProcessTree,
+} from "../../processTree";
 
 function withTimeout<T>(
   promise: Promise<T>,
@@ -145,4 +150,47 @@ export async function runSmokeTest(): Promise<void> {
   );
   await withTimeout(initialized, 20_000, "adapter initialization");
   await withTimeout(terminated, 30_000, "debug session termination");
+}
+
+export function runProcessTreeModelTest(): void {
+  const tree: PyRustProcessTree = {
+    processes: [
+      {
+        processId: 100,
+        label: "Python parent process",
+        role: "Python parent process",
+        isActive: true,
+        isStopped: false,
+        threads: [{ threadId: 101, name: "Main thread", isStopped: false }],
+      },
+      {
+        processId: 200,
+        parentProcessId: 100,
+        label: "worker-A",
+        role: "Python child process",
+        isActive: false,
+        isStopped: true,
+        threads: [{ threadId: 201, name: "Main thread", isStopped: true }],
+      },
+      {
+        processId: 201,
+        parentProcessId: 100,
+        label: "worker-B",
+        role: "Python child process",
+        isActive: false,
+        isStopped: false,
+        threads: [{ threadId: 202, name: "Main thread", isStopped: false }],
+      },
+    ],
+  };
+
+  assert.deepStrictEqual(
+    rootProcesses(tree).map((process) => process.processId),
+    [100],
+  );
+  assert.deepStrictEqual(
+    childProcesses(tree, 100).map((process) => process.processId),
+    [200, 201],
+  );
+  assert.deepStrictEqual(childProcesses(tree, 200), []);
 }

@@ -112,6 +112,13 @@ class ProxyHooks:
     ) -> LocalResponse | None:
         return None
 
+    def on_process_tree(
+        self,
+        request: Message,
+        context: "ProxyContext",
+    ) -> LocalResponse | None:
+        return None
+
     def close(self) -> None:
         """Release hook-owned resources after the DAP session ends."""
 
@@ -208,6 +215,7 @@ class DapProxy:
             "stackTrace",
             "threads",
             "variables",
+            "pyrust/processTree",
         }
     )
 
@@ -569,6 +577,8 @@ class DapProxy:
                 response = self._hooks.on_set_breakpoints(request, self.context)
             elif command == "configurationDone":
                 response = self._hooks.on_configuration_done(request, self.context)
+            elif command == "pyrust/processTree":
+                response = self._hooks.on_process_tree(request, self.context)
             elif command == "scopes":
                 response = self._hooks.on_scopes(request, self.context)
             elif command == "variables":

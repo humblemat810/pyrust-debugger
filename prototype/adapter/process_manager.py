@@ -301,6 +301,8 @@ class ProcessManager:
             self._state.register_process(
                 process_id,
                 parent_process_id=parent_process_id,
+                display_name=str(record.get("label") or f"Child {process_id}"),
+                role="Python child process",
             )
             session = _ChildSession(process_id, transport, set(), ready=True)
             with self._lock:
@@ -338,7 +340,15 @@ class ProcessManager:
                 session = self._sessions.get(process_id)
                 if session is not None:
                     session.thread_ids.add(thread_id)
-            self._state.bind_thread(process_id, thread_id)
+            self._state.bind_thread(
+                process_id,
+                thread_id,
+                name=(
+                    body.get("threadName")
+                    if isinstance(body.get("threadName"), str)
+                    else None
+                ),
+            )
         body["systemProcessId"] = process_id
         if name == "stopped":
             self._state.on_stopped({"body": body})

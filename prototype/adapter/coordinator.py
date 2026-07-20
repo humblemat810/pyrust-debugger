@@ -20,6 +20,7 @@ class ThreadBinding:
 
     native_thread_id: int
     python_thread_id: int | None = None
+    name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,8 @@ class ProcessSession:
     parent_process_id: int | None = None
     native_connected: bool = False
     python_connected: bool = False
+    display_name: str | None = None
+    role: str | None = None
     children: set[int] = field(default_factory=set)
     threads: dict[int, ThreadBinding] = field(default_factory=dict)
 
@@ -64,6 +67,8 @@ class ProcessCoordinator:
         *,
         parent_process_id: int | None = None,
         engine: DebugEngine | None = None,
+        display_name: str | None = None,
+        role: str | None = None,
     ) -> ProcessSession:
         _require_id(process_id, "process ID")
         if parent_process_id is not None:
@@ -86,6 +91,10 @@ class ProcessCoordinator:
                 )
             elif parent_process_id is not None:
                 session.parent_process_id = parent_process_id
+            if display_name:
+                session.display_name = display_name
+            if role:
+                session.role = role
 
             if parent_process_id is not None:
                 parent = self._processes.get(parent_process_id)
@@ -99,7 +108,13 @@ class ProcessCoordinator:
                 session.python_connected = True
             return _copy_session(session)
 
-    def bind_native_thread(self, process_id: int, native_thread_id: int) -> None:
+    def bind_native_thread(
+        self,
+        process_id: int,
+        native_thread_id: int,
+        *,
+        name: str | None = None,
+    ) -> None:
         _require_id(native_thread_id, "native thread ID")
         with self._lock:
             session = self._require_process(process_id)
@@ -107,6 +122,7 @@ class ProcessCoordinator:
             session.threads[native_thread_id] = ThreadBinding(
                 native_thread_id=native_thread_id,
                 python_thread_id=existing.python_thread_id if existing else None,
+                name=name or (existing.name if existing else None),
             )
 
     def bind_python_thread(
@@ -119,9 +135,11 @@ class ProcessCoordinator:
         _require_id(python_thread_id, "Python thread ID")
         with self._lock:
             session = self._require_process(process_id)
+            existing = session.threads.get(native_thread_id)
             session.threads[native_thread_id] = ThreadBinding(
                 native_thread_id=native_thread_id,
                 python_thread_id=python_thread_id,
+                name=existing.name if existing else None,
             )
 
     def process(self, process_id: int) -> ProcessSession | None:
@@ -132,6 +150,15 @@ class ProcessCoordinator:
     def process_ids(self) -> frozenset[int]:
         with self._lock:
             return frozenset(self._processes)
+
+    def processes(self) -> tuple[ProcessSession, ...]:
+        """Return a stable snapshot for the VS Code process-tree view."""
+
+        with self._lock:
+            return tuple(
+                _copy_session(self._processes[process_id])
+                for process_id in sorted(self._processes)
+            )
 
     def acquire_stop(
         self,
@@ -200,6 +227,8 @@ def _copy_session(session: ProcessSession) -> ProcessSession:
         parent_process_id=session.parent_process_id,
         native_connected=session.native_connected,
         python_connected=session.python_connected,
+        display_name=session.display_name,
+        role=session.role,
         children=set(session.children),
         threads=dict(session.threads),
     )

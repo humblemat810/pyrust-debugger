@@ -1,6 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import {
+  focusThread,
+  PyRustProcessTreeProvider,
+} from "./processTree";
 
 function workspaceRoot(session: vscode.DebugSession): string {
   const folder =
@@ -112,6 +116,7 @@ class PyRustConfigurationProvider
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  const processTree = new PyRustProcessTreeProvider();
   context.subscriptions.push(
     vscode.debug.registerDebugAdapterDescriptorFactory(
       "pyrust",
@@ -121,6 +126,38 @@ export function activate(context: vscode.ExtensionContext): void {
       "pyrust",
       new PyRustConfigurationProvider(),
     ),
+    vscode.window.registerTreeDataProvider("pyrustProcessTree", processTree),
+    vscode.commands.registerCommand("pyrust.focusThread", focusThread),
+    vscode.debug.onDidStartDebugSession((session) => {
+      if (session.type === "pyrust") {
+        void processTree.refresh(session);
+      }
+    }),
+    vscode.debug.onDidTerminateDebugSession((session) => {
+      processTree.clear(session);
+    }),
+    vscode.debug.registerDebugAdapterTrackerFactory("pyrust", {
+      createDebugAdapterTracker(session) {
+        return {
+          onDidSendMessage(message: unknown) {
+            const event = message as { type?: string; event?: string };
+            if (
+              event.type === "event" &&
+              [
+                "continued",
+                "exited",
+                "process",
+                "stopped",
+                "terminated",
+                "thread",
+              ].includes(event.event ?? "")
+            ) {
+              void processTree.refresh(session);
+            }
+          },
+        };
+      },
+    }),
   );
 }
 

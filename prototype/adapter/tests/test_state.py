@@ -129,6 +129,74 @@ class ProxySessionStateTests(unittest.TestCase):
         assert snapshot is not None
         self.assertFalse(snapshot.is_stopped)
 
+    def test_process_tree_uses_parent_child_groups_without_thread_duplication(
+        self,
+    ) -> None:
+        state = ProxySessionState()
+        state.register_process(
+            100,
+            display_name="Python parent process",
+            role="Python parent process",
+        )
+        state.bind_thread(100, 101, name="Main thread")
+        state.register_process(
+            200,
+            parent_process_id=100,
+            display_name="worker-A",
+            role="Python child process",
+        )
+        state.bind_thread(200, 201, name="Worker A")
+        state.register_process(
+            201,
+            parent_process_id=100,
+            display_name="worker-B",
+            role="Python child process",
+        )
+        state.bind_thread(201, 202, name="Worker B")
+
+        tree = state.process_tree()
+        by_process = {item["processId"]: item for item in tree}
+        self.assertEqual(by_process[100]["parentProcessId"], None)
+        self.assertEqual(by_process[200]["parentProcessId"], 100)
+        self.assertEqual(by_process[201]["parentProcessId"], 100)
+        self.assertEqual(
+            [thread["threadId"] for thread in by_process[100]["threads"]],
+            [101],
+        )
+        self.assertEqual(
+            [thread["threadId"] for thread in by_process[200]["threads"]],
+            [201],
+        )
+        self.assertEqual(
+            [thread["threadId"] for thread in by_process[201]["threads"]],
+            [202],
+        )
+
+        state.remove_process(200)
+        after_exit = {item["processId"]: item for item in state.process_tree()}
+        self.assertNotIn(200, after_exit)
+        self.assertIn(100, after_exit)
+        self.assertIn(201, after_exit)
+
+    def test_process_tree_includes_stopped_thread_before_threads_response(self) -> None:
+        state = ProxySessionState()
+        state.register_process(100)
+        state.on_stopped({"body": {"systemProcessId": 100, "threadId": 101}})
+
+        tree = state.process_tree()
+        self.assertEqual(tree[0]["threads"][0]["threadId"], 101)
+        self.assertEqual(tree[0]["threads"][0]["name"], "Thread 101")
+        self.assertTrue(tree[0]["threads"][0]["isStopped"])
+
+    def test_process_tree_uses_launch_metadata_for_native_process(self) -> None:
+        state = ProxySessionState()
+        state.set_default_process_metadata("Python process", "Python process")
+        state.register_process(100)
+
+        tree = state.process_tree()
+        self.assertEqual(tree[0]["label"], "Python process")
+        self.assertEqual(tree[0]["role"], "Python process")
+
     def test_records_codelldb_launch_output_as_process_fallback(self) -> None:
         state = ProxySessionState()
         state.record_output_event(

@@ -138,6 +138,8 @@ class ProxySessionState:
         self._stop_epoch = 0
         self._is_stopped = False
         self._active_process_id: int | None = None
+        self._default_process_name: str | None = None
+        self._default_process_role: str | None = None
         self._processes: dict[int, ProcessSnapshot] = {}
         self._thread_processes: dict[int, int] = {}
         self.coordinator = coordinator or ProcessCoordinator()
@@ -185,15 +187,26 @@ class ProxySessionState:
         if match:
             self.register_process(int(match.group(1)))
 
+    def set_default_process_metadata(self, label: str, role: str) -> None:
+        """Use launch metadata until the native adapter reports a process ID."""
+
+        with self._lock:
+            self._default_process_name = label
+            self._default_process_role = role
+
     def register_process(
         self,
         process_id: int,
         *,
         parent_process_id: int | None = None,
+        display_name: str | None = None,
+        role: str | None = None,
     ) -> None:
         if not _valid_id(process_id):
             return
         with self._lock:
+            label = display_name or self._default_process_name
+            process_role = role or self._default_process_role
             existing = self._processes.get(process_id)
             self._processes[process_id] = existing or ProcessSnapshot(
                 process_id=process_id,
@@ -206,6 +219,8 @@ class ProxySessionState:
             process_id,
             parent_process_id=parent_process_id,
             engine="native",
+            display_name=label,
+            role=process_role,
         )
 
     def record_threads_response(self, response: dict[str, Any]) -> None:
@@ -221,9 +236,19 @@ class ProxySessionState:
         for thread in threads:
             thread_id = thread.get("id") if isinstance(thread, dict) else None
             if _valid_id(thread_id):
-                self.bind_thread(process_id, thread_id)
+                self.bind_thread(
+                    process_id,
+                    thread_id,
+                    name=thread.get("name") if isinstance(thread.get("name"), str) else None,
+                )
 
-    def bind_thread(self, process_id: int, thread_id: int) -> None:
+    def bind_thread(
+        self,
+        process_id: int,
+        thread_id: int,
+        *,
+        name: str | None = None,
+    ) -> None:
         if not _valid_id(process_id) or not _valid_id(thread_id):
             return
         with self._lock:
@@ -243,7 +268,7 @@ class ProxySessionState:
             )
             self._thread_processes[thread_id] = process_id
             self._active_process_id = process_id
-        self.coordinator.bind_native_thread(process_id, thread_id)
+        self.coordinator.bind_native_thread(process_id, thread_id, name=name)
 
     def process_id_for_thread(self, thread_id: int) -> int | None:
         with self._lock:
@@ -252,6 +277,55 @@ class ProxySessionState:
     def process_snapshot(self, process_id: int) -> ProcessSnapshot | None:
         with self._lock:
             return self._processes.get(process_id)
+
+    def process_tree(self) -> list[dict[str, Any]]:
+        """Expose coordinator-owned process/thread hierarchy to the extension."""
+
+        with self._lock:
+            snapshots = dict(self._processes)
+            active_process_id = self._active_process_id
+        processes: list[dict[str, Any]] = []
+        for session in self.coordinator.processes():
+            snapshot = snapshots.get(session.process_id)
+            thread_ids = (
+                snapshot.thread_ids
+                if snapshot is not None
+                else frozenset(session.threads)
+            )
+            processes.append(
+                {
+                    "processId": session.process_id,
+                    "parentProcessId": session.parent_process_id,
+                    "label": session.display_name
+                    or f"Process {session.process_id}",
+                    "role": session.role or "native process",
+                    "isActive": session.process_id == active_process_id,
+                    "isStopped": bool(snapshot and snapshot.is_stopped),
+                    "threads": [
+                        {
+                            "threadId": thread_id,
+                            "name": (
+                                (
+                                    session.threads.get(thread_id).name
+                                    if session.threads.get(thread_id) is not None
+                                    else None
+                                )
+                                or f"Thread {thread_id}"
+                            ),
+                            "isStopped": bool(
+                                snapshot
+                                and snapshot.is_stopped
+                                and self.coordinator.execution_owner(
+                                    session.process_id
+                                )
+                                == "native"
+                            ),
+                        }
+                        for thread_id in sorted(thread_ids)
+                    ],
+                }
+            )
+        return processes
 
     def is_thread_stopped(self, thread_id: int) -> bool:
         process_id = self.process_id_for_thread(thread_id)
@@ -319,6 +393,7 @@ class ProxySessionState:
                 self._active_process_id = process_id
         if process_id is not None and _valid_id(thread_id):
             try:
+                self.coordinator.bind_native_thread(process_id, thread_id)
                 self.coordinator.acquire_stop(process_id, thread_id, "native")
             except CoordinationError:
                 # A future Python-owned stop must not be overwritten by a
