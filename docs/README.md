@@ -9,6 +9,7 @@
 - [ADR 0003: Stabilize before Rust-outer](decisions/0003-stabilize-before-rust-outer.md)
 - [ADR 0004: Containerized VS Code validation](decisions/0004-containerized-vscode-validation.md)
 - [ADR 0005: Read-only Python frame locals](decisions/0005-read-only-python-frame-locals.md)
+- [ADR 0006: Process-tree coordinator](decisions/0006-process-tree-coordinator.md)
 - [Feasibility summary](feasibility.md)
 
 ## Research reports
@@ -31,6 +32,8 @@
 - [Containerized VS Code acceptance](acceptance/containerized-vscode.md)
 - [Containerized VS Code manual verification](acceptance/containerized-vscode-manual.md)
 - [Python frame locals acceptance](acceptance/python-frame-locals.md)
+- [Process-tree coordinator acceptance](acceptance/process-tree-coordinator.md)
+- [Async coordinator acceptance](acceptance/async-coordinator.md)
 - [Test strategy](test-plan.md)
 - [Risk register](risk-register.md)
 
@@ -49,6 +52,16 @@ ADR 0005 adds read-only primitive local snapshots for the supported Python
 frames in both directions, plus safe snapshot expressions. It does not add
 Python breakpoints, stepping, object expansion, mutation, or in-target Python
 execution.
+
+ADR 0006 implements the first process-tree coordinator. Two-worker
+Python-thread and Rust-thread fixtures pass. Python-parent and Rust-parent
+multiprocess fixtures also pass through dedicated child CodeLLDB transports;
+see
+[Multiprocess Native Attach Result](research/multiprocess-native-attach.md).
+
+Async native-stop support is verified for Python `asyncio` tasks and Rust
+`async fn` futures crossing embedded Python `async def`; see
+[Async coordinator acceptance](acceptance/async-coordinator.md).
 
 ADR 0004 is implemented. A pinned Linux Dev Container, local `pyrust`
 extension, both launch configurations, and the two-lifecycle acceptance command

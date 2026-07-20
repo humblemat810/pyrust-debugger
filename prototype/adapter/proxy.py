@@ -60,7 +60,11 @@ class _ForwardedDownstreamRequest:
 class ProxyHooks:
     """Override only the traffic needed by mixed-stack integration."""
 
-    def on_launch(self, request: Message, context: "ProxyContext") -> Message:
+    def on_launch(
+        self,
+        request: Message,
+        context: "ProxyContext",
+    ) -> Message | LocalResponse:
         return request
 
     def on_stopped(self, event: Message, context: "ProxyContext") -> Message | None:
@@ -79,6 +83,37 @@ class ProxyHooks:
         context: "ProxyContext",
     ) -> LocalResponse | None:
         return None
+
+    def on_threads(
+        self,
+        request: Message,
+        context: "ProxyContext",
+    ) -> LocalResponse | None:
+        return None
+
+    def on_continue_request(
+        self,
+        request: Message,
+        context: "ProxyContext",
+    ) -> LocalResponse | None:
+        return None
+
+    def on_set_breakpoints(
+        self,
+        request: Message,
+        context: "ProxyContext",
+    ) -> LocalResponse | None:
+        return None
+
+    def on_configuration_done(
+        self,
+        request: Message,
+        context: "ProxyContext",
+    ) -> LocalResponse | None:
+        return None
+
+    def close(self) -> None:
+        """Release hook-owned resources after the DAP session ends."""
 
     def on_scopes(
         self,
@@ -163,7 +198,18 @@ class ProxyContext:
 class DapProxy:
     """Relay one upstream DAP stream to a child downstream adapter."""
 
-    _HOOK_COMMANDS = frozenset({"stackTrace", "scopes", "variables", "evaluate"})
+    _HOOK_COMMANDS = frozenset(
+        {
+            "configurationDone",
+            "continue",
+            "evaluate",
+            "scopes",
+            "setBreakpoints",
+            "stackTrace",
+            "threads",
+            "variables",
+        }
+    )
 
     def __init__(
         self,
@@ -174,6 +220,7 @@ class DapProxy:
         downstream_env: Mapping[str, str] | None = None,
         downstream_cwd: str | os.PathLike[str] | None = None,
         hooks: ProxyHooks | None = None,
+        state: ProxySessionState | None = None,
         request_timeout: float = 5.0,
         shutdown_timeout: float = 2.0,
         log: LogFunction | None = None,
@@ -195,7 +242,7 @@ class DapProxy:
         self._shutdown_timeout = shutdown_timeout
         self._log = log or (lambda line: print(line, file=sys.stderr, flush=True))
 
-        self.state = ProxySessionState()
+        self.state = state or ProxySessionState()
         self.context = ProxyContext(self, self.state)
 
         self._process: subprocess.Popen[bytes] | None = None
@@ -270,6 +317,7 @@ class DapProxy:
             )
         )
         self._shutdown_downstream()
+        self._hooks.close()
         return 1 if self.fatal_message else 0
 
     def request_downstream(
@@ -460,6 +508,9 @@ class DapProxy:
     def _handle_launch_request(self, request: Message) -> None:
         try:
             outgoing = self._hooks.on_launch(request, self.context)
+            if isinstance(outgoing, LocalResponse):
+                self._send_local_response(request, outgoing)
+                return
             if not isinstance(outgoing, dict):
                 raise TypeError("launch hook must return a DAP request object")
             if outgoing.get("command") != "launch":
@@ -487,17 +538,19 @@ class DapProxy:
         event = message.get("event")
         if event == "process":
             self.state.record_process_event(message)
+        elif event == "output":
+            self.state.record_output_event(message)
         elif event == "stopped":
-            self.state.on_stopped()
+            self.state.on_stopped(message)
             self._event_hook_queue.put(("stopped", message))
             return
         elif event == "continued":
-            self.state.on_continued()
+            self.state.on_continued(message)
             self._event_hook_queue.put(("continued", message))
             return
         elif event == "terminated":
             self._terminated_event_seen.set()
-            self.state.on_terminated()
+            self.state.on_terminated(message)
         self._forward_to_upstream(message)
 
     def _handle_hook_request(self, request: Message) -> None:
@@ -508,6 +561,14 @@ class DapProxy:
                 response = built_in
             elif command == "stackTrace":
                 response = self._hooks.on_stack_trace(request, self.context)
+            elif command == "threads":
+                response = self._hooks.on_threads(request, self.context)
+            elif command == "continue":
+                response = self._hooks.on_continue_request(request, self.context)
+            elif command == "setBreakpoints":
+                response = self._hooks.on_set_breakpoints(request, self.context)
+            elif command == "configurationDone":
+                response = self._hooks.on_configuration_done(request, self.context)
             elif command == "scopes":
                 response = self._hooks.on_scopes(request, self.context)
             elif command == "variables":
@@ -651,6 +712,8 @@ class DapProxy:
                 "downstream response refers to an unknown proxy request"
             )
         self._validate_response_command(message, forwarded.command, "downstream")
+        if forwarded.command == "threads":
+            self.state.record_threads_response(message)
 
         outgoing = dict(message)
         outgoing["seq"] = self._allocate_upstream_sequence()

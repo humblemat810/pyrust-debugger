@@ -97,9 +97,11 @@ Fixture matrix:
 | Python -> one Rust function | Basic boundary |
 | Python -> nested Rust | Native frame ordering |
 | Python worker -> Rust | Thread mapping |
+| Python asyncio task -> Rust | Active coroutine locals on one OS thread |
 | Python -> Rust -> Python | Multiple boundary regions |
 | Rust -> Python | Reverse direction |
 | Rust -> Python -> Rust | Full interleaving |
+| Rust async future -> Python async -> Rust | Async poll-frame boundary |
 
 Assertions:
 

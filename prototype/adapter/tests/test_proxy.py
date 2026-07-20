@@ -217,6 +217,31 @@ class ProxyContractTests(unittest.TestCase):
         self.assertEqual(event["body"]["systemProcessId"], 4242)
         self.assertNotEqual(event["seq"], 5000)
 
+    def test_threads_response_is_associated_with_active_process(self) -> None:
+        proxy = self.proxy(hooks=SLICE_HOOKS)
+        proxy.send(30, "emitProcess")
+        proxy.read_until(
+            lambda message: (
+                message.get("type") == "response"
+                and message.get("request_seq") == 30
+            )
+        )
+
+        proxy.send(31, "threads")
+        response = proxy.read_until(
+            lambda message: (
+                message.get("type") == "response"
+                and message.get("request_seq") == 31
+            )
+        )[0]
+        self.assertTrue(response["success"])
+
+        proxy.send(32, "emitStopped")
+        stopped = proxy.read_until(
+            lambda message: message.get("event") == "stopped"
+        )[0]
+        self.assertEqual(stopped["body"]["hookProcessId"], 4242)
+
     def test_hooks_can_request_full_native_stack_and_page_locally(self) -> None:
         proxy = self.proxy(hooks=SLICE_HOOKS)
         proxy.send(1, "emitStopped")

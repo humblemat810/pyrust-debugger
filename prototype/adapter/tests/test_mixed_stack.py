@@ -229,6 +229,32 @@ class MixedStackHooksTests(unittest.TestCase):
             [frame["id"] for frame in reverse_native],
         )
 
+    def test_rust_async_poll_frame_satisfies_reverse_boundary(self) -> None:
+        native = [
+            {"id": 201, "name": "rust_outer_python_async::rust_callback"},
+            {"id": 202, "name": "_PyFunction_Vectorcall"},
+            {
+                "id": 203,
+                "name": "rust_outer_python_async::rust_outer::{closure#0}",
+            },
+            {
+                "id": 204,
+                "name": "rust_outer_python_async::async_task::{closure#0}",
+            },
+            {"id": 205, "name": "rust_outer_python_async::main"},
+        ]
+        python = [
+            {"name": "python_inner", "path": "/work/async_embedded.py", "line": 8},
+            {"name": "python_outer", "path": "/work/async_embedded.py", "line": 12},
+            {
+                "name": "_run",
+                "path": "/usr/lib/python3.14/asyncio/events.py",
+                "line": 84,
+            },
+        ]
+
+        self.assertEqual(MixedStackHooks._fixture_insertion_index(native, python), 1)
+
     def test_rust_outer_pages_after_crossing_both_language_boundaries(
         self,
     ) -> None:

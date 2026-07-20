@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .cache/
+.pyrust-child-registry/
 
 # Rust and Python build products
 target/

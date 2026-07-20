@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import unittest
 
-from prototype.adapter.state import ProxySessionState, SyntheticFrameRegistry
+from prototype.adapter.proxy import DapProxy
+from prototype.adapter.state import ProcessSnapshot, ProxySessionState, SyntheticFrameRegistry
 
 
 class SyntheticFrameRegistryTests(unittest.TestCase):
@@ -56,6 +58,16 @@ class SyntheticFrameRegistryTests(unittest.TestCase):
 
 
 class ProxySessionStateTests(unittest.TestCase):
+    def test_proxy_accepts_a_shared_session_state(self) -> None:
+        state = ProxySessionState()
+        proxy = DapProxy(
+            ["fake-downstream"],
+            state=state,
+            upstream_input=io.BytesIO(),
+            upstream_output=io.BytesIO(),
+        )
+        self.assertIs(proxy.state, state)
+
     def test_process_and_stop_transitions(self) -> None:
         state = ProxySessionState()
         state.record_process_event(
@@ -72,6 +84,77 @@ class ProxySessionStateTests(unittest.TestCase):
         state.on_continued()
         self.assertFalse(state.is_stopped)
         self.assertEqual(state.on_stopped(), 2)
+
+    def test_tracks_threads_per_process_and_process_stop_state(self) -> None:
+        state = ProxySessionState()
+        state.record_process_event({"body": {"systemProcessId": 4242}})
+        state.record_threads_response(
+            {
+                "body": {
+                    "threads": [
+                        {"id": 4242, "name": "main"},
+                        {"id": 4243, "name": "worker"},
+                    ]
+                }
+            }
+        )
+
+        self.assertEqual(state.process_id_for_thread(4243), 4242)
+        self.assertEqual(
+            state.process_snapshot(4242),
+            ProcessSnapshot(
+                process_id=4242,
+                stop_epoch=0,
+                is_stopped=False,
+                thread_ids=frozenset({4242, 4243}),
+            ),
+        )
+
+        self.assertEqual(
+            state.on_stopped({"body": {"threadId": 4243}}),
+            1,
+        )
+        self.assertEqual(
+            state.process_snapshot(4242),
+            ProcessSnapshot(
+                process_id=4242,
+                stop_epoch=1,
+                is_stopped=True,
+                thread_ids=frozenset({4242, 4243}),
+            ),
+        )
+
+        state.on_continued({"body": {"threadId": 4243}})
+        snapshot = state.process_snapshot(4242)
+        assert snapshot is not None
+        self.assertFalse(snapshot.is_stopped)
+
+    def test_records_codelldb_launch_output_as_process_fallback(self) -> None:
+        state = ProxySessionState()
+        state.record_output_event(
+            {
+                "body": {
+                    "output": "Launched process 9876 from '/tmp/python'\n",
+                }
+            }
+        )
+
+        self.assertEqual(state.process_id, 9876)
+        self.assertEqual(state.process_ids, frozenset({9876}))
+
+    def test_process_event_can_preserve_parent_relationship(self) -> None:
+        state = ProxySessionState()
+        state.record_process_event({"body": {"systemProcessId": 100}})
+        state.record_process_event(
+            {"body": {"systemProcessId": 200, "parentProcessId": 100}}
+        )
+
+        parent = state.coordinator.process(100)
+        child = state.coordinator.process(200)
+        assert parent is not None
+        assert child is not None
+        self.assertEqual(parent.children, {200})
+        self.assertEqual(child.parent_process_id, 100)
 
 
 if __name__ == "__main__":

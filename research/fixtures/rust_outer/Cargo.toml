@@ -10,3 +10,15 @@ pyo3 = { version = "0.29.0", features = ["auto-initialize"] }
 opt-level = 0
 debug = 2
 strip = false
+
+[[bin]]
+name = "rust-outer-python-threads"
+path = "src/threaded_main.rs"
+
+[[bin]]
+name = "rust-outer-python-processes"
+path = "src/process_main.rs"
+
+[[bin]]
+name = "rust-outer-python-async"
+path = "src/async_main.rs"

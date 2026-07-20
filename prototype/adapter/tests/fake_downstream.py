@@ -150,6 +150,12 @@ def run(mode: str) -> int:
                 "totalFrames": 2,
                 "receivedArguments": arguments,
             }
+        elif command == "threads":
+            body = {
+                "threads": [
+                    {"id": 77, "name": "fixture-worker"},
+                ]
+            }
         elif command == "scopes":
             body = {
                 "scopes": [

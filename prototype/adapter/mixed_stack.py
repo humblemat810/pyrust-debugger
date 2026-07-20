@@ -12,6 +12,8 @@ import subprocess
 from threading import Lock, Thread
 from typing import Any, Mapping
 
+from .child_transport import ChildTransportError
+from .process_manager import ProcessManager
 from prototype.python.pyrust_stack import (
     LocalReadError,
     StackReadError,
@@ -58,12 +60,21 @@ class MixedStackHooks(ProxyHooks):
         self._in_process_worker_active = False
         self._in_process_circuit_open = False
         self._in_process_timeout_diagnosed = False
+        self._process_manager: ProcessManager | None = None
+        self._child_only_process: subprocess.Popen[bytes] | None = None
+        self._child_only_mode = False
 
-    def on_launch(self, request: Message, context: ProxyContext) -> Message:
+    def on_launch(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> Message | LocalResponse:
         outgoing = dict(request)
         arguments = dict(outgoing.get("arguments") or {})
         helper_command = arguments.pop("pyrustHelperCommand", None)
         helper_timeout_ms = arguments.pop("pyrustHelperTimeoutMs", None)
+        child_registry = arguments.pop("pyrustChildRegistryPath", None)
+        process_mode = arguments.pop("pyrustProcessMode", "native")
 
         if helper_command is not None and not isinstance(helper_command, str):
             raise ValueError("pyrustHelperCommand must be a string")
@@ -73,12 +84,50 @@ class MixedStackHooks(ProxyHooks):
             or helper_timeout_ms <= 0
         ):
             raise ValueError("pyrustHelperTimeoutMs must be a positive integer")
+        if child_registry is not None and (
+            not isinstance(child_registry, str) or not child_registry
+        ):
+            raise ValueError("pyrustChildRegistryPath must be a non-empty string")
+        if process_mode not in {"native", "children"}:
+            raise ValueError("pyrustProcessMode must be 'native' or 'children'")
+        if process_mode == "children" and child_registry is None:
+            raise ValueError(
+                "pyrustProcessMode 'children' requires pyrustChildRegistryPath"
+            )
+        if process_mode == "children":
+            _prepare_child_registry(Path(child_registry))
 
         with self._lock:
             self._helper_command = helper_command
             self._helper_timeout_ms = helper_timeout_ms or 1_000
             self._stopped_thread_id = None
             self._diagnosed_epochs.clear()
+            self._child_only_mode = process_mode == "children"
+            if self._process_manager is not None:
+                self._process_manager.close()
+                self._process_manager = None
+            self._terminate_child_only_process()
+            if self._child_only_mode:
+                self._child_only_process = self._start_child_only_parent(
+                    arguments,
+                    context,
+                )
+                context.state.register_process(self._child_only_process.pid)
+            if child_registry is not None:
+                self._process_manager = ProcessManager(
+                    registry_path=Path(child_registry),
+                    adapter_command=_child_codelldb_command(),
+                    cwd=str(Path(__file__).resolve().parents[2]),
+                    state=context.state,
+                    emit_event=lambda event, body: self._emit_child_event(
+                        context,
+                        event,
+                        body,
+                    ),
+                )
+            if self._child_only_mode:
+                context.send_event("initialized")
+                return LocalResponse(body={})
         outgoing["arguments"] = arguments
         return outgoing
 
@@ -99,11 +148,108 @@ class MixedStackHooks(ProxyHooks):
             self._stopped_thread_id = None
         return event
 
+    def on_threads(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        del request, context
+        if self._process_manager is None:
+            return None
+        return LocalResponse(body={"threads": self._process_manager.threads()})
+
+    def on_continue_request(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        thread_id = (request.get("arguments") or {}).get("threadId")
+        manager = self._process_manager
+        if manager is not None and manager.owns_thread(thread_id):
+            assert isinstance(thread_id, int)
+            try:
+                response = manager.continue_thread(thread_id)
+            except ChildTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
+
+        # CodeLLDB may emit continued after a fast async future has already
+        # reached its next stop. Once native continue succeeds, invalidate the
+        # old synthetic Python frames synchronously for this DAP client.
+        try:
+            response = context.request_downstream(
+                "continue",
+                dict(request.get("arguments") or {}),
+                timeout=10,
+            )
+        except Exception as error:
+            return LocalResponse(success=False, message=f"native continue failed: {error}")
+        if response.get("success") is not True:
+            return LocalResponse(
+                success=False,
+                body=response.get("body"),
+                message=str(response.get("message", "native continue failed")),
+            )
+        context.state.on_continued(
+            {"body": {"threadId": thread_id}}
+            if isinstance(thread_id, int)
+            else None
+        )
+        return LocalResponse(body=dict(response.get("body") or {}))
+
+    def on_set_breakpoints(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        del context
+        if self._process_manager is not None:
+            self._process_manager.add_breakpoints(request.get("arguments") or {})
+        if self._child_only_mode:
+            breakpoints = (request.get("arguments") or {}).get("breakpoints")
+            count = len(breakpoints) if isinstance(breakpoints, list) else 0
+            return LocalResponse(
+                body={
+                    "breakpoints": [
+                        {
+                            "verified": False,
+                            "message": (
+                                "Breakpoint will be resolved in registered "
+                                "child processes"
+                            ),
+                        }
+                        for _ in range(count)
+                    ]
+                }
+            )
+        return None
+
+    def on_configuration_done(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        del request, context
+        if self._process_manager is not None:
+            self._process_manager.mark_configuration_done()
+        if self._child_only_mode:
+            return LocalResponse(body={})
+        return None
+
     def on_scopes(
         self,
         request: Message,
         context: ProxyContext,
     ) -> LocalResponse | None:
+        frame_id = (request.get("arguments") or {}).get("frameId")
+        manager = self._process_manager
+        if manager is not None and manager.native_frame_route(frame_id) is not None:
+            assert isinstance(frame_id, int)
+            try:
+                response = manager.scopes(frame_id)
+            except ChildTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
         frame = self._current_python_frame(request, context)
         if frame is None:
             return None
@@ -144,6 +290,13 @@ class MixedStackHooks(ProxyHooks):
         reference = (request.get("arguments") or {}).get("variablesReference")
         if not isinstance(reference, int):
             return None
+        manager = self._process_manager
+        if manager is not None and manager.variable_route(reference) is not None:
+            try:
+                response = manager.variables(reference)
+            except ChildTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
         synthetic = context.synthetic_frames.get(reference)
         if synthetic is None:
             return None
@@ -176,6 +329,15 @@ class MixedStackHooks(ProxyHooks):
         request: Message,
         context: ProxyContext,
     ) -> LocalResponse | None:
+        frame_id = (request.get("arguments") or {}).get("frameId")
+        manager = self._process_manager
+        if manager is not None and manager.native_frame_route(frame_id) is not None:
+            assert isinstance(frame_id, int)
+            try:
+                response = manager.evaluate(frame_id, request.get("arguments") or {})
+            except ChildTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
         frame = self._current_python_frame(request, context)
         if frame is None:
             return None
@@ -225,16 +387,34 @@ class MixedStackHooks(ProxyHooks):
                 message="stackTrace requires a positive threadId",
             )
 
+        manager = self._process_manager
+        child_process = (
+            context.state.process_id_for_thread(thread_id)
+            if manager is not None and manager.owns_thread(thread_id)
+            else None
+        )
         request_epoch = context.state.stop_epoch
+        synthetic_epoch = None if child_process is not None else request_epoch
         try:
-            self._require_epoch(context, request_epoch)
+            self._require_epoch(
+                context,
+                request_epoch,
+                process_id=child_process,
+            )
         except StaleStopError as error:
             return LocalResponse(success=False, message=str(error))
-        native_response = context.request_downstream(
-            "stackTrace",
-            self._native_stack_arguments(arguments, thread_id),
-            timeout=10,
-        )
+        try:
+            native_response = (
+                manager.stack_trace(thread_id, arguments)
+                if manager is not None and manager.owns_thread(thread_id)
+                else context.request_downstream(
+                    "stackTrace",
+                    self._native_stack_arguments(arguments, thread_id),
+                    timeout=10,
+                )
+            )
+        except ChildTransportError as error:
+            return LocalResponse(success=False, message=str(error))
         if native_response.get("success") is not True:
             return LocalResponse(
                 success=False,
@@ -259,21 +439,36 @@ class MixedStackHooks(ProxyHooks):
         context.synthetic_frames.reserve_native_ids(native_ids)
 
         try:
-            self._require_epoch(context, request_epoch)
+            self._require_epoch(
+                context,
+                request_epoch,
+                process_id=child_process,
+            )
             python_frames = self._read_python_frames(
-                process_id=context.state.process_id or self._fallback_process_id(thread_id),
+                process_id=(
+                    context.state.process_id_for_thread(thread_id)
+                    or self._fallback_process_id(thread_id)
+                ),
                 thread_id=thread_id,
             )
-            self._require_epoch(context, request_epoch)
+            self._require_epoch(
+                context,
+                request_epoch,
+                process_id=child_process,
+            )
             merged = self._merge_frames(
                 native_frames,
                 python_frames,
                 thread_id,
                 native_ids,
                 context,
-                request_epoch,
+                synthetic_epoch,
             )
-            self._require_epoch(context, request_epoch)
+            self._require_epoch(
+                context,
+                request_epoch,
+                process_id=child_process,
+            )
         except StaleStopError as error:
             return LocalResponse(success=False, message=str(error))
         except (
@@ -285,7 +480,11 @@ class MixedStackHooks(ProxyHooks):
             if isinstance(error, InProcessHelperTimeout):
                 self._diagnose_in_process_timeout_once(context)
             try:
-                self._require_epoch(context, request_epoch)
+                self._require_epoch(
+                    context,
+                    request_epoch,
+                    process_id=child_process,
+                )
             except StaleStopError as stale_error:
                 return LocalResponse(success=False, message=str(stale_error))
             if isinstance(error, InProcessUnwinderUnavailable):
@@ -310,11 +509,23 @@ class MixedStackHooks(ProxyHooks):
         )
 
     def _fallback_process_id(self, thread_id: int) -> int:
-        with self._lock:
-            stopped_thread_id = self._stopped_thread_id
-        # In the fixed single-thread Linux fixture, CodeLLDB's DAP thread ID is
-        # the OS TID and equals the process ID.
-        return stopped_thread_id or thread_id
+        # Linux exposes each task's thread-group leader in /proc/<tid>/status.
+        # This keeps worker-thread reads directed at the process leader even
+        # when CodeLLDB does not emit a DAP process event.
+        try:
+            for line in Path(f"/proc/{thread_id}/status").read_text(
+                encoding="utf-8"
+            ).splitlines():
+                if line.startswith("Tgid:"):
+                    leader = int(line.partition(":")[2].strip())
+                    if leader > 0:
+                        return leader
+        except (OSError, ValueError):
+            pass
+        # Preserve the fixture fallback for adapters that use OS TIDs as
+        # process IDs. Multithread acceptance must prove this is not used for
+        # worker threads.
+        return thread_id
 
     def _read_python_frames(
         self,
@@ -512,7 +723,7 @@ class MixedStackHooks(ProxyHooks):
         thread_id: int,
         native_ids: list[int],
         context: ProxyContext,
-        request_epoch: int,
+        synthetic_epoch: int | None,
     ) -> list[dict[str, Any]]:
         insertion_index = MixedStackHooks._fixture_insertion_index(
             native_frames,
@@ -531,7 +742,7 @@ class MixedStackHooks(ProxyHooks):
                 ),
                 frame,
                 native_frame_ids=native_ids,
-                expected_epoch=request_epoch,
+                expected_epoch=synthetic_epoch,
             )
             synthetic.append(
                 {
@@ -562,31 +773,30 @@ class MixedStackHooks(ProxyHooks):
         if leaves[:2] == ["rust_inner", "rust_outer"]:
             return 2
 
-        if names[:1] != ["rust_outer_python_inner::rust_callback"]:
+        if leaves[:1] != ["rust_callback"]:
             raise HelperFailure(
                 f"native fixture boundary was not found: {leaves[:2]!r}"
             )
         python_names = [str(frame.get("name", "")) for frame in python_frames]
-        if python_names not in (
-            ["python_inner", "python_outer"],
-            ["python_inner", "python_outer", "<module>"],
-        ):
+        if python_names[:2] != ["python_inner", "python_outer"]:
             raise HelperFailure(
                 f"Rust-outer Python boundary was not found: {python_names!r}"
             )
         try:
-            rust_outer_index = names.index(
-                "rust_outer_python_inner::rust_outer",
-                1,
-            )
-            names.index(
-                "rust_outer_python_inner::main",
-                rust_outer_index + 1,
+            rust_outer_index = next(
+                index
+                for index, name in enumerate(names[1:], start=1)
+                if "rust_outer" in name
             )
         except ValueError as error:
             raise HelperFailure(
                 "Rust-outer fixture boundary was not found"
             ) from error
+        if not any(
+            name.endswith("::main") or "::main::" in name
+            for name in names[rust_outer_index + 1 :]
+        ):
+            raise HelperFailure("Rust-outer fixture entry boundary was not found")
         return 1
 
     @staticmethod
@@ -605,11 +815,20 @@ class MixedStackHooks(ProxyHooks):
         return arguments
 
     @staticmethod
-    def _require_epoch(context: ProxyContext, expected_epoch: int) -> None:
-        if (
-            not context.state.is_stopped
-            or context.state.stop_epoch != expected_epoch
-        ):
+    def _require_epoch(
+        context: ProxyContext,
+        expected_epoch: int,
+        *,
+        process_id: int | None = None,
+    ) -> None:
+        if process_id is not None:
+            snapshot = context.state.process_snapshot(process_id)
+            if snapshot is None or not snapshot.is_stopped:
+                raise StaleStopError(
+                    "debuggee continued while stackTrace was being collected"
+                )
+            return
+        if not context.state.is_stopped or context.state.stop_epoch != expected_epoch:
             raise StaleStopError(
                 "debuggee continued while stackTrace was being collected"
             )
@@ -631,6 +850,87 @@ class MixedStackHooks(ProxyHooks):
             "PyRust in-process unwinder timeout; circuit opened for this session\n",
             category="stderr",
         )
+
+    def close(self) -> None:
+        with self._lock:
+            manager = self._process_manager
+            self._process_manager = None
+            child_only_process = self._child_only_process
+            self._child_only_process = None
+            self._child_only_mode = False
+        if manager is not None:
+            manager.close()
+        if child_only_process is not None:
+            _terminate_process(child_only_process)
+
+    def _start_child_only_parent(
+        self,
+        arguments: Mapping[str, Any],
+        context: ProxyContext,
+    ) -> subprocess.Popen[bytes]:
+        program = arguments.get("program")
+        if not isinstance(program, str) or not program:
+            raise ValueError("child coordinator launch requires a program")
+        raw_args = arguments.get("args", [])
+        if not isinstance(raw_args, list) or not all(
+            isinstance(item, str) for item in raw_args
+        ):
+            raise ValueError("child coordinator launch args must be strings")
+        cwd = arguments.get("cwd", str(Path.cwd()))
+        if not isinstance(cwd, str) or not cwd:
+            raise ValueError("child coordinator launch cwd must be a string")
+        environment = os.environ.copy()
+        launch_env = arguments.get("env", {})
+        if not isinstance(launch_env, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in launch_env.items()
+        ):
+            raise ValueError("child coordinator launch env must be string pairs")
+        environment.update(launch_env)
+        try:
+            process = subprocess.Popen(
+                [program, *raw_args],
+                cwd=cwd,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as error:
+            raise HelperFailure(
+                f"could not launch child coordinator parent: {error}"
+            ) from error
+
+        def wait_for_parent() -> None:
+            exit_code = process.wait()
+            context.send_event("exited", {"exitCode": exit_code})
+            context.send_event("terminated", {})
+
+        Thread(
+            target=wait_for_parent,
+            name="pyrust-child-parent-waiter",
+            daemon=True,
+        ).start()
+        return process
+
+    def _terminate_child_only_process(self) -> None:
+        process = self._child_only_process
+        self._child_only_process = None
+        if process is not None:
+            _terminate_process(process)
+
+    def _emit_child_event(
+        self,
+        context: ProxyContext,
+        event: str,
+        body: Mapping[str, Any],
+    ) -> None:
+        message: Message = {"body": dict(body)}
+        if event == "stopped":
+            self.on_stopped(message, context)
+        elif event == "continued":
+            self.on_continued(message, context)
+        context.send_event(event, body)
 
     @staticmethod
     def _current_python_frame(
@@ -772,3 +1072,40 @@ def _evaluate_python_expression(
     ):
         raise PythonExpressionError("expression result has an unsupported type")
     return result
+
+
+def _child_codelldb_command() -> list[str]:
+    adapter = os.environ.get("PYRUST_CODELLDB")
+    liblldb = os.environ.get("PYRUST_LIBLLDB")
+    if adapter and liblldb:
+        return [adapter, "--liblldb", liblldb]
+    candidates = sorted(
+        (Path.home() / ".vscode-server" / "extensions").glob(
+            "vadimcn.vscode-lldb-1.12.2*"
+        )
+    )
+    for extension in reversed(candidates):
+        candidate_adapter = extension / "adapter" / "codelldb"
+        candidate_liblldb = extension / "lldb" / "lib" / "liblldb.so"
+        if candidate_adapter.is_file() and candidate_liblldb.is_file():
+            return [str(candidate_adapter), "--liblldb", str(candidate_liblldb)]
+    raise ValueError("CodeLLDB 1.12.2 is required for child process debugging")
+
+
+def _terminate_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=2)
+
+
+def _prepare_child_registry(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    for pattern in ("child-*.json", "ready-*", "attached-*", "release"):
+        for candidate in path.glob(pattern):
+            if candidate.is_file() or candidate.is_symlink():
+                candidate.unlink()

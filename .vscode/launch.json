@@ -33,6 +33,104 @@
         "rust"
       ],
       "preLaunchTask": "PyRust: Build Rust Outer"
+    },
+    {
+      "type": "pyrust",
+      "request": "launch",
+      "name": "PyRust: Python Threads",
+      "program": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "${workspaceFolder}/tests/acceptance/threaded_fixture_driver.py"
+      ],
+      "cwd": "${workspaceFolder}",
+      "terminal": "console",
+      "consoleMode": "evaluate",
+      "sourceLanguages": [
+        "rust"
+      ],
+      "preLaunchTask": "PyRust: Build Python Outer"
+    },
+    {
+      "type": "pyrust",
+      "request": "launch",
+      "name": "PyRust: Rust Threads",
+      "program": "${env:CARGO_TARGET_DIR}/debug/rust-outer-python-threads",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "LD_LIBRARY_PATH": "${env:PYRUST_PYTHON_LIBDIR}"
+      },
+      "terminal": "console",
+      "consoleMode": "evaluate",
+      "sourceLanguages": [
+        "rust"
+      ],
+      "preLaunchTask": "PyRust: Build Rust Threads"
+    },
+    {
+      "type": "pyrust",
+      "request": "launch",
+      "name": "PyRust: Python Async",
+      "program": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "${workspaceFolder}/tests/acceptance/async_fixture_driver.py"
+      ],
+      "cwd": "${workspaceFolder}",
+      "terminal": "console",
+      "consoleMode": "evaluate",
+      "sourceLanguages": [
+        "rust"
+      ],
+      "preLaunchTask": "PyRust: Build Python Outer"
+    },
+    {
+      "type": "pyrust",
+      "request": "launch",
+      "name": "PyRust: Rust Async",
+      "program": "${env:CARGO_TARGET_DIR}/debug/rust-outer-python-async",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "LD_LIBRARY_PATH": "${env:PYRUST_PYTHON_LIBDIR}"
+      },
+      "terminal": "console",
+      "consoleMode": "evaluate",
+      "sourceLanguages": [
+        "rust"
+      ],
+      "preLaunchTask": "PyRust: Build Rust Async"
+    },
+    {
+      "type": "pyrust",
+      "request": "launch",
+      "name": "PyRust: Python Processes",
+      "program": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "${workspaceFolder}/tests/acceptance/multiprocess_fixture_driver.py"
+      ],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYRUST_CHILD_REGISTRY": "${workspaceFolder}/.pyrust-child-registry"
+      },
+      "pyrustChildRegistryPath": "${workspaceFolder}/.pyrust-child-registry",
+      "pyrustProcessMode": "children",
+      "preLaunchTask": "PyRust: Build Python Outer"
+    },
+    {
+      "type": "pyrust",
+      "request": "launch",
+      "name": "PyRust: Rust Processes",
+      "program": "${env:CARGO_TARGET_DIR}/debug/rust-outer-python-processes",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYRUST_CHILD_REGISTRY": "${workspaceFolder}/.pyrust-child-registry",
+        "PYRUST_PYTHON": "${workspaceFolder}/.venv/bin/python",
+        "PYRUST_PROCESS_WORKER": "${workspaceFolder}/tests/acceptance/multiprocess_worker.py"
+      },
+      "pyrustChildRegistryPath": "${workspaceFolder}/.pyrust-child-registry",
+      "pyrustProcessMode": "children",
+      "preLaunchTask": "PyRust: Build Rust Processes"
     }
   ]
 }

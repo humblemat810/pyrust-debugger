@@ -17,6 +17,9 @@ class SliceHooks(ProxyHooks):
         outgoing["body"] = {
             **event.get("body", {}),
             "hookEpoch": context.state.stop_epoch,
+            "hookProcessId": context.state.process_id_for_thread(
+                event.get("body", {}).get("threadId")
+            ),
         }
         return outgoing
 

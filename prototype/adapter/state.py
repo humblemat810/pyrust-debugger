@@ -1,11 +1,13 @@
-"""Stop-epoch and synthetic-frame state shared with proxy hooks."""
+"""Process, thread, stop-epoch, and synthetic-frame state for proxy hooks."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from threading import Lock
 from typing import Any, Hashable, Iterable, Literal
 
+from .coordinator import CoordinationError, ProcessCoordinator
 
 MAX_DAP_ID = 2_147_483_647
 
@@ -17,6 +19,16 @@ class SyntheticFrame:
     thread_id: int
     key: Hashable
     value: Any
+
+
+@dataclass(frozen=True)
+class ProcessSnapshot:
+    """Coordinator-visible state for one debuggee process."""
+
+    process_id: int
+    stop_epoch: int
+    is_stopped: bool
+    thread_ids: frozenset[int]
 
 
 class SyntheticFrameRegistry:
@@ -114,13 +126,21 @@ class SyntheticFrameRegistry:
 
 
 class ProxySessionState:
-    """Minimal process and stop state exposed to integration hooks."""
+    """Coordinator-ready process and stop state exposed to integration hooks.
 
-    def __init__(self) -> None:
+    The current proxy still owns one CodeLLDB transport, but state is keyed by
+    process and thread so a coordinator can safely grow to multiple native and
+    Python sessions without reusing the single-process assumptions.
+    """
+
+    def __init__(self, coordinator: ProcessCoordinator | None = None) -> None:
         self._lock = Lock()
         self._stop_epoch = 0
         self._is_stopped = False
-        self._process_id: int | None = None
+        self._active_process_id: int | None = None
+        self._processes: dict[int, ProcessSnapshot] = {}
+        self._thread_processes: dict[int, int] = {}
+        self.coordinator = coordinator or ProcessCoordinator()
         self.synthetic_frames = SyntheticFrameRegistry()
 
     @property
@@ -136,29 +156,236 @@ class ProxySessionState:
     @property
     def process_id(self) -> int | None:
         with self._lock:
-            return self._process_id
+            return self._active_process_id
+
+    @property
+    def process_ids(self) -> frozenset[int]:
+        with self._lock:
+            return frozenset(self._processes)
 
     def record_process_event(self, event: dict[str, Any]) -> None:
-        process_id = event.get("body", {}).get("systemProcessId")
-        if isinstance(process_id, int) and process_id > 0:
-            with self._lock:
-                self._process_id = process_id
+        body = event.get("body") or {}
+        process_id = body.get("systemProcessId")
+        parent_process_id = body.get("parentProcessId")
+        if _valid_id(process_id):
+            self.register_process(
+                process_id,
+                parent_process_id=(
+                    parent_process_id if _valid_id(parent_process_id) else None
+                ),
+            )
 
-    def on_stopped(self) -> int:
+    def record_output_event(self, event: dict[str, Any]) -> None:
+        """Capture CodeLLDB's launch PID fallback until it emits process events."""
+
+        output = (event.get("body") or {}).get("output")
+        if not isinstance(output, str):
+            return
+        match = re.search(r"\bLaunched process (\d+)\b", output)
+        if match:
+            self.register_process(int(match.group(1)))
+
+    def register_process(
+        self,
+        process_id: int,
+        *,
+        parent_process_id: int | None = None,
+    ) -> None:
+        if not _valid_id(process_id):
+            return
+        with self._lock:
+            existing = self._processes.get(process_id)
+            self._processes[process_id] = existing or ProcessSnapshot(
+                process_id=process_id,
+                stop_epoch=0,
+                is_stopped=False,
+                thread_ids=frozenset(),
+            )
+            self._active_process_id = process_id
+        self.coordinator.register_process(
+            process_id,
+            parent_process_id=parent_process_id,
+            engine="native",
+        )
+
+    def record_threads_response(self, response: dict[str, Any]) -> None:
+        """Associate the current native process with its reported DAP threads."""
+
+        threads = (response.get("body") or {}).get("threads")
+        if not isinstance(threads, list):
+            return
+        with self._lock:
+            process_id = self._active_process_id
+        if process_id is None:
+            return
+        for thread in threads:
+            thread_id = thread.get("id") if isinstance(thread, dict) else None
+            if _valid_id(thread_id):
+                self.bind_thread(process_id, thread_id)
+
+    def bind_thread(self, process_id: int, thread_id: int) -> None:
+        if not _valid_id(process_id) or not _valid_id(thread_id):
+            return
+        with self._lock:
+            existing = self._processes.get(process_id)
+            if existing is None:
+                existing = ProcessSnapshot(
+                    process_id=process_id,
+                    stop_epoch=0,
+                    is_stopped=False,
+                    thread_ids=frozenset(),
+                )
+            self._processes[process_id] = ProcessSnapshot(
+                process_id=process_id,
+                stop_epoch=existing.stop_epoch,
+                is_stopped=existing.is_stopped,
+                thread_ids=existing.thread_ids | {thread_id},
+            )
+            self._thread_processes[thread_id] = process_id
+            self._active_process_id = process_id
+        self.coordinator.bind_native_thread(process_id, thread_id)
+
+    def process_id_for_thread(self, thread_id: int) -> int | None:
+        with self._lock:
+            return self._thread_processes.get(thread_id) or self._active_process_id
+
+    def process_snapshot(self, process_id: int) -> ProcessSnapshot | None:
+        with self._lock:
+            return self._processes.get(process_id)
+
+    def is_thread_stopped(self, thread_id: int) -> bool:
+        process_id = self.process_id_for_thread(thread_id)
+        if process_id is None:
+            return False
+        with self._lock:
+            snapshot = self._processes.get(process_id)
+            return bool(snapshot and snapshot.is_stopped)
+
+    def remove_process(self, process_id: int) -> None:
+        """Forget one child without disrupting unrelated process sessions."""
+
+        if not _valid_id(process_id):
+            return
+        with self._lock:
+            self._processes.pop(process_id, None)
+            self._thread_processes = {
+                thread_id: owner
+                for thread_id, owner in self._thread_processes.items()
+                if owner != process_id
+            }
+            if self._active_process_id == process_id:
+                self._active_process_id = next(iter(self._processes), None)
+            self._is_stopped = any(
+                snapshot.is_stopped for snapshot in self._processes.values()
+            )
+        self.coordinator.remove_process(process_id)
+
+    def on_stopped(self, event: dict[str, Any] | None = None) -> int:
+        thread_id = (event.get("body") or {}).get("threadId") if event else None
+        event_process_id = (
+            (event.get("body") or {}).get("systemProcessId") if event else None
+        )
         with self._lock:
             self._stop_epoch += 1
             self._is_stopped = True
             epoch = self._stop_epoch
+            process_id = (
+                event_process_id
+                if _valid_id(event_process_id)
+                else (
+                    self._thread_processes.get(thread_id)
+                    if _valid_id(thread_id)
+                    else self._active_process_id
+                )
+            )
+            if process_id is not None:
+                existing = self._processes.get(process_id)
+                self._processes[process_id] = ProcessSnapshot(
+                    process_id=process_id,
+                    stop_epoch=epoch,
+                    is_stopped=True,
+                    thread_ids=(
+                        existing.thread_ids | {thread_id}
+                        if existing is not None and _valid_id(thread_id)
+                        else (
+                            frozenset({thread_id})
+                            if _valid_id(thread_id)
+                            else (existing.thread_ids if existing else frozenset())
+                        )
+                    ),
+                )
+                if _valid_id(thread_id):
+                    self._thread_processes[thread_id] = process_id
+                self._active_process_id = process_id
+        if process_id is not None and _valid_id(thread_id):
+            try:
+                self.coordinator.acquire_stop(process_id, thread_id, "native")
+            except CoordinationError:
+                # A future Python-owned stop must not be overwritten by a
+                # native event. The hook will fall back rather than guessing.
+                pass
         self.synthetic_frames.begin_epoch(epoch)
         return epoch
 
-    def on_continued(self) -> None:
+    def on_continued(self, event: dict[str, Any] | None = None) -> None:
+        event_process_id = (
+            (event.get("body") or {}).get("systemProcessId") if event else None
+        )
         with self._lock:
-            self._is_stopped = False
+            thread_id = (event.get("body") or {}).get("threadId") if event else None
+            process_id = (
+                event_process_id
+                if _valid_id(event_process_id)
+                else (
+                    self._thread_processes.get(thread_id)
+                    if _valid_id(thread_id)
+                    else self._active_process_id
+                )
+            )
+            if process_id is not None and process_id in self._processes:
+                existing = self._processes[process_id]
+                self._processes[process_id] = ProcessSnapshot(
+                    process_id=process_id,
+                    stop_epoch=existing.stop_epoch,
+                    is_stopped=False,
+                    thread_ids=existing.thread_ids,
+                )
+            self._is_stopped = any(
+                snapshot.is_stopped for snapshot in self._processes.values()
+            )
+        if process_id is not None:
+            try:
+                self.coordinator.release_stop(process_id, "native")
+            except CoordinationError:
+                pass
         self.synthetic_frames.clear_current()
 
-    def on_terminated(self) -> None:
+    def on_terminated(self, event: dict[str, Any] | None = None) -> None:
+        process_id = (
+            (event.get("body") or {}).get("systemProcessId") if event else None
+        )
         with self._lock:
             self._is_stopped = False
-            self._process_id = None
+            if _valid_id(process_id):
+                self._processes.pop(process_id, None)
+                self._thread_processes = {
+                    thread_id: owner
+                    for thread_id, owner in self._thread_processes.items()
+                    if owner != process_id
+                }
+                if self._active_process_id == process_id:
+                    self._active_process_id = next(iter(self._processes), None)
+            else:
+                self._active_process_id = None
+                self._processes.clear()
+                self._thread_processes.clear()
+        if _valid_id(process_id):
+            self.remove_process(process_id)
+        else:
+            for registered_process_id in self.coordinator.process_ids():
+                self.coordinator.remove_process(registered_process_id)
         self.synthetic_frames.clear_current()
+
+
+def _valid_id(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0

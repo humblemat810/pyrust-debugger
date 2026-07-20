@@ -215,10 +215,12 @@ def launch_arguments(
     *,
     helper_command: str | None = None,
     helper_timeout_ms: int | None = None,
+    program: Path | None = None,
+    args: list[str] | None = None,
 ) -> dict[str, Any]:
     arguments: dict[str, Any] = {
-        "program": str(PYTHON),
-        "args": [str(DRIVER)],
+        "program": str(program or PYTHON),
+        "args": args if args is not None else [str(DRIVER)],
         "cwd": str(ROOT),
         "terminal": "console",
         "consoleMode": "evaluate",

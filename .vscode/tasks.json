@@ -53,6 +53,75 @@
       ],
       "dependsOn": "PyRust: Ensure Debugger Extension",
       "dependsOrder": "sequence"
+    },
+    {
+      "label": "PyRust: Build Rust Threads",
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "build",
+        "--locked",
+        "--manifest-path",
+        "${workspaceFolder}/research/fixtures/rust_outer/Cargo.toml",
+        "--bin",
+        "rust-outer-python-threads"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PYO3_PYTHON": "${workspaceFolder}/.venv/bin/python"
+        }
+      },
+      "problemMatcher": [
+        "$rustc"
+      ],
+      "dependsOn": "PyRust: Ensure Debugger Extension",
+      "dependsOrder": "sequence"
+    },
+    {
+      "label": "PyRust: Build Rust Processes",
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "build",
+        "--locked",
+        "--manifest-path",
+        "${workspaceFolder}/research/fixtures/rust_outer/Cargo.toml",
+        "--bin",
+        "rust-outer-python-processes"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$rustc"
+      ],
+      "dependsOn": "PyRust: Ensure Debugger Extension",
+      "dependsOrder": "sequence"
+    },
+    {
+      "label": "PyRust: Build Rust Async",
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "build",
+        "--locked",
+        "--manifest-path",
+        "${workspaceFolder}/research/fixtures/rust_outer/Cargo.toml",
+        "--bin",
+        "rust-outer-python-async"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PYO3_PYTHON": "${workspaceFolder}/.venv/bin/python"
+        }
+      },
+      "problemMatcher": [
+        "$rustc"
+      ],
+      "dependsOn": "PyRust: Ensure Debugger Extension",
+      "dependsOrder": "sequence"
     }
   ]
 }
