@@ -23,6 +23,7 @@
     "source=pyrust-debugger-cargo-target,target=/opt/pyrust-target,type=volume"
   ],
   "postCreateCommand": "bash .devcontainer/bootstrap.sh",
+  "postAttachCommand": "bash .devcontainer/install-vscode-extension.sh",
   "remoteUser": "root",
   "shutdownAction": "stopContainer",
   "customizations": {

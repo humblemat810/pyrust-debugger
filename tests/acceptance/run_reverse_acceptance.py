@@ -92,6 +92,7 @@ def launch_arguments(
         "cwd": str(ROOT),
         "env": {"LD_LIBRARY_PATH": python_libdir()},
         "terminal": "console",
+        "consoleMode": "evaluate",
         "sourceLanguages": ["rust"],
     }
     if helper_command is not None:

@@ -105,6 +105,7 @@ class PyRustConfigurationProvider
     configuration.cwd ??= folder?.uri.fsPath;
     configuration.args ??= [];
     configuration.terminal ??= "console";
+    configuration.consoleMode ??= "evaluate";
     configuration.sourceLanguages ??= ["rust"];
     return configuration;
   }

@@ -8,10 +8,57 @@ EXTENSION="pyrust.pyrust-debugger@0.0.1"
 STATE_DIR="$HOME/.pyrust-debugger"
 STATE_FILE="$STATE_DIR/vsix.sha256"
 
-if ! command -v code >/dev/null 2>&1; then
-    echo "PyRust extension install deferred until VS Code attaches"
-    exit 0
-fi
+prepare_vscode_cli() {
+    if command -v code >/dev/null 2>&1; then
+        return 0
+    fi
+
+    local remote_cli
+    remote_cli="$(
+        find /vscode/vscode-server/bin \
+            -type f \
+            -path "*/bin/remote-cli/code" \
+            -print \
+            -quit \
+            2>/dev/null || true
+    )"
+    if [[ -z "$remote_cli" ]]; then
+        echo "PyRust extension install deferred until VS Code attaches"
+        return 1
+    fi
+
+    if [[ -z "${VSCODE_IPC_HOOK_CLI:-}" ]]; then
+        local ipc_socket=""
+        for _ in {1..40}; do
+            ipc_socket="$(
+            find /tmp \
+                -maxdepth 1 \
+                -type s \
+                -name "vscode-ipc-*.sock" \
+                -printf "%T@ %p\n" \
+                2>/dev/null \
+                | sort -nr \
+                | awk 'NR == 1 { print $2 }'
+            )"
+            if [[ -n "$ipc_socket" ]]; then
+                break
+            fi
+            sleep 0.5
+        done
+        if [[ -z "$ipc_socket" ]]; then
+            echo "PyRust extension install deferred until VS Code IPC is ready"
+            return 1
+        fi
+        export VSCODE_IPC_HOOK_CLI="$ipc_socket"
+    fi
+
+    export PATH="$(dirname "$remote_cli"):$PATH"
+    export TERM_PROGRAM="${TERM_PROGRAM:-vscode}"
+    export VSCODE_INJECTION="${VSCODE_INJECTION:-1}"
+    export VSCODE_STABLE="${VSCODE_STABLE:-1}"
+}
+
+prepare_vscode_cli || exit 0
 
 if [[ -f "$WORKSPACE_VSIX" ]]; then
     VSIX="$WORKSPACE_VSIX"
@@ -23,7 +70,7 @@ else
 fi
 
 is_installed() {
-    code --list-extensions --show-versions \
+    env -u NODE_OPTIONS code --list-extensions --show-versions \
         | tr -d '\r' \
         | grep -Fqx "$EXTENSION"
 }
@@ -39,7 +86,7 @@ then
     exit 0
 fi
 
-code --install-extension "$VSIX" --force
+env -u NODE_OPTIONS code --install-extension "$VSIX" --force
 
 for _ in {1..20}; do
     if is_installed; then

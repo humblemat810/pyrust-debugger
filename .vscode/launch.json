@@ -11,6 +11,7 @@
       ],
       "cwd": "${workspaceFolder}",
       "terminal": "console",
+      "consoleMode": "evaluate",
       "sourceLanguages": [
         "rust"
       ],
@@ -27,6 +28,7 @@
         "LD_LIBRARY_PATH": "${env:PYRUST_PYTHON_LIBDIR}"
       },
       "terminal": "console",
+      "consoleMode": "evaluate",
       "sourceLanguages": [
         "rust"
       ],

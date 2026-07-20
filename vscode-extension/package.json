@@ -15,7 +15,7 @@
     "workspace"
   ],
   "activationEvents": [
-    "onDebug:pyrust"
+    "onDebug"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -89,6 +89,16 @@
                 ],
                 "default": "console"
               },
+              "consoleMode": {
+                "type": "string",
+                "enum": [
+                  "commands",
+                  "evaluate",
+                  "split"
+                ],
+                "default": "evaluate",
+                "description": "CodeLLDB Debug Console behavior."
+              },
               "sourceLanguages": {
                 "type": "array",
                 "items": {
@@ -112,6 +122,7 @@
             ],
             "cwd": "${workspaceFolder}",
             "terminal": "console",
+            "consoleMode": "evaluate",
             "sourceLanguages": [
               "rust"
             ]
@@ -127,6 +138,7 @@
               "LD_LIBRARY_PATH": "${env:PYRUST_PYTHON_LIBDIR}"
             },
             "terminal": "console",
+            "consoleMode": "evaluate",
             "sourceLanguages": [
               "rust"
             ]
@@ -141,7 +153,7 @@
     "package": "vsce package --allow-missing-repository --out pyrust-debugger.vsix",
     "test:extension": "node ./out/test/runTest.js",
     "test:installed-extension": "node ./out/test/runInstalledTest.js",
-    "test": "npm run compile && npm run test:extension && npm run test:installed-extension"
+    "test": "npm run compile && npm run package && npm run test:extension && npm run test:installed-extension"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

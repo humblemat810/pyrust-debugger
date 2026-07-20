@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -151,8 +152,11 @@ def happy_path() -> dict[str, Any]:
             {"expression": "value", "frameId": native_id, "context": "watch"},
         )
         evaluate_response = client.response(evaluate_request)
-        if "body" not in evaluate_response:
-            raise DapError("native evaluation response has no body")
+        result = str(evaluate_response.get("body", {}).get("result", ""))
+        if not re.search(r"\b20\b", result):
+            raise DapError(
+                f"native evaluation did not return value 20: {evaluate_response}"
+            )
 
         old_python_ids = {
             frame["id"]

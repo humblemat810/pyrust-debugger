@@ -18,6 +18,25 @@ function withTimeout<T>(
   ]);
 }
 
+async function waitForExtensionActivation(
+  extension: vscode.Extension<unknown>,
+): Promise<void> {
+  await withTimeout(
+    new Promise<void>((resolve) => {
+      const poll = () => {
+        if (extension.isActive) {
+          resolve();
+          return;
+        }
+        setTimeout(poll, 25);
+      };
+      poll();
+    }),
+    20_000,
+    "PyRust extension activation",
+  );
+}
+
 export async function runSmokeTest(): Promise<void> {
   const extension = vscode.extensions.getExtension(
     "pyrust.pyrust-debugger",
@@ -25,16 +44,39 @@ export async function runSmokeTest(): Promise<void> {
   if (!extension) {
     throw new Error("PyRust extension was not discovered");
   }
-  await extension.activate();
 
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
     throw new Error("extension test requires the repository workspace");
   }
+  let resolveExpressionMode: () => void;
+  let rejectExpressionMode: (error: Error) => void;
+  const expressionMode = new Promise<void>((resolve, reject) => {
+    resolveExpressionMode = resolve;
+    rejectExpressionMode = reject;
+  });
   const initialized = new Promise<void>((resolve) => {
     vscode.debug.registerDebugAdapterTrackerFactory("pyrust", {
       createDebugAdapterTracker() {
         return {
+          onWillReceiveMessage(message: unknown) {
+            const candidate = message as {
+              command?: string;
+              arguments?: { consoleMode?: string };
+            };
+            if (
+              candidate.command === "launch" &&
+              candidate.arguments?.consoleMode === "evaluate"
+            ) {
+              resolveExpressionMode();
+            } else if (candidate.command === "launch") {
+              rejectExpressionMode(
+                new Error(
+                  "PyRust launch did not request CodeLLDB expression mode",
+                ),
+              );
+            }
+          },
           onDidSendMessage(message: unknown) {
             const candidate = message as {
               type?: string;
@@ -83,12 +125,24 @@ export async function runSmokeTest(): Promise<void> {
     ],
     cwd: folder.uri.fsPath,
     terminal: "console",
+    consoleMode: "evaluate",
     sourceLanguages: ["rust"],
   });
   assert.strictEqual(launched, true, "VS Code rejected the pyrust launch");
 
   const session = await withTimeout(started, 20_000, "debug session start");
   assert.strictEqual(session.type, "pyrust");
+  await withTimeout(
+    expressionMode,
+    20_000,
+    "CodeLLDB expression-mode launch request",
+  );
+  await waitForExtensionActivation(extension);
+  assert.strictEqual(
+    extension.isActive,
+    true,
+    "PyRust did not activate when the debug session started",
+  );
   await withTimeout(initialized, 20_000, "adapter initialization");
   await withTimeout(terminated, 30_000, "debug session termination");
 }

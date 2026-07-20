@@ -2,6 +2,15 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "PyRust: Ensure Debugger Extension",
+      "type": "process",
+      "command": "bash",
+      "args": [
+        "${workspaceFolder}/.devcontainer/install-vscode-extension.sh"
+      ],
+      "problemMatcher": []
+    },
+    {
       "label": "PyRust: Build Python Outer",
       "type": "process",
       "command": "${workspaceFolder}/.venv/bin/maturin",
@@ -19,7 +28,9 @@
       },
       "problemMatcher": [
         "$rustc"
-      ]
+      ],
+      "dependsOn": "PyRust: Ensure Debugger Extension",
+      "dependsOrder": "sequence"
     },
     {
       "label": "PyRust: Build Rust Outer",
@@ -39,7 +50,9 @@
       },
       "problemMatcher": [
         "$rustc"
-      ]
+      ],
+      "dependsOn": "PyRust: Ensure Debugger Extension",
+      "dependsOrder": "sequence"
     }
   ]
 }

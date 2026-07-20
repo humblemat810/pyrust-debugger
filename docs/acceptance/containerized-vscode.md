@@ -46,7 +46,7 @@ Cargo build state must use container-owned paths or volumes.
 Inside the container:
 
 ```text
-python --version == 3.14.6
+.venv/bin/python --version == Python 3.14.6
 CodeLLDB == 1.12.2
 rustc == 1.97.1
 node == the version pinned by the container definition
@@ -95,7 +95,8 @@ reports every ADR 0003 criterion as passing.
 
 ### AC-CV-08: Extension-Host Smoke Test
 
-A VS Code extension test starts a `pyrust` session, reaches an initialized
+A VS Code extension test installs the packaged VSIX through VS Code's
+extension-management CLI, starts a `pyrust` session, reaches an initialized
 adapter, launches one fixed fixture, and shuts down cleanly with a bounded
 timeout.
 

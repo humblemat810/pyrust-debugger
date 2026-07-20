@@ -43,8 +43,8 @@ const debuggerContribution = manifest.contributes?.debuggers?.find(
 if (!debuggerContribution) {
   throw new Error("pyrust debugger contribution is missing");
 }
-if (!manifest.activationEvents?.includes("onDebug:pyrust")) {
-  throw new Error("pyrust activation event is missing");
+if (!manifest.activationEvents?.includes("onDebug")) {
+  throw new Error("onDebug activation event is missing");
 }
 if (manifest.main !== "./out/extension.js") {
   throw new Error(`unexpected extension entry point: ${manifest.main}`);
@@ -52,8 +52,30 @@ if (manifest.main !== "./out/extension.js") {
 '
 
     test -f "$EXTENSION/pyrust-debugger.vsix"
-    test -f \
-        /root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.1/out/extension.js
+    test -f /opt/pyrust-extension/pyrust-debugger.vsix
+    test -x "$ROOT/.devcontainer/install-vscode-extension.sh"
+    node -e '
+const fs = require("node:fs");
+const container = JSON.parse(
+  fs.readFileSync(".devcontainer/devcontainer.json", "utf8"),
+);
+if (
+  container.postAttachCommand !==
+  "bash .devcontainer/install-vscode-extension.sh"
+) {
+  throw new Error("postAttachCommand does not install the PyRust extension");
+}
+const tasks = JSON.parse(fs.readFileSync(".vscode/tasks.json", "utf8"));
+for (const label of [
+  "PyRust: Build Python Outer",
+  "PyRust: Build Rust Outer",
+]) {
+  const task = tasks.tasks.find((candidate) => candidate.label === label);
+  if (task?.dependsOn !== "PyRust: Ensure Debugger Extension") {
+    throw new Error(`${label} does not ensure extension installation`);
+  }
+}
+'
 }
 
 check_explicit_codelldb() {

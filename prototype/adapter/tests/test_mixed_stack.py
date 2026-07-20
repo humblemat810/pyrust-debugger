@@ -482,6 +482,22 @@ class MixedStackHooksTests(unittest.TestCase):
         )
         self.assertIn("timeout", self.proxy.outputs[0].lower())
 
+    def test_launch_preserves_codelldb_console_mode(self) -> None:
+        forwarded = self.hooks.on_launch(
+            {
+                "arguments": {
+                    "consoleMode": "evaluate",
+                    "pyrustHelperTimeoutMs": 250,
+                }
+            },
+            self.context,
+        )
+
+        self.assertEqual(
+            forwarded["arguments"],
+            {"consoleMode": "evaluate"},
+        )
+
     def test_in_process_timeout_opens_session_circuit_and_bounds_workers(
         self,
     ) -> None:

@@ -76,9 +76,9 @@ The TypeScript extension compiled and packaged with a zero-vulnerability
 - started a `pyrust` debug session;
 - observed the adapter's DAP `initialized` event;
 - launched the Python-outer fixture;
-- repeated the smoke test after discovering `pyrust` only from
-  `/root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.1`, without
-  loading it through `--extensionDevelopmentPath`;
+- repeated the smoke test after installing the packaged VSIX through VS Code's
+  extension-management CLI, without loading `pyrust` through
+  `--extensionDevelopmentPath`;
 - terminated with exit code zero under `xvfb`.
 
 DBus and GPU diagnostics from headless Electron were non-fatal and did not
@@ -99,6 +99,23 @@ The same regression set passed again after container and volume recreation.
 
 ## Remaining Gate
 
-Automated ADR 0004 acceptance is complete. Human criteria `HC-CV-01` through
-`HC-CV-04` remain pending in
+### 2026-07-20 Follow-Up
+
+A real Dev Containers attach exposed two issues that the original headless
+test did not cover:
+
+- `onDebug:pyrust` did not activate the local debugger extension;
+- copying an extension folder did not reliably register it with the live
+  VS Code Server.
+
+The implementation now uses `onDebug`, packages a VSIX, and installs it
+through the VS Code extension manager. The attach-time installer was tested
+inside the running Dev Container with no terminal-specific VS Code
+environment, then repeated to prove it is idempotent. The updated first-slice,
+reverse-slice, and both extension-host smoke modes pass.
+
+The final `./scripts/accept-container.sh` clean two-lifecycle rerun remains
+pending after these changes because it intentionally stops and removes the
+active development container. Human criteria `HC-CV-01` through `HC-CV-04`
+also remain pending in
 [Containerized VS Code Manual Verification](../acceptance/containerized-vscode-manual.md).

@@ -9,16 +9,16 @@ evidence required by ADR 0004.
 ## Test Record
 
 ```text
-Date:
-Tester:
-Desktop VS Code version:
-Connection topology: local | Remote-SSH
-Remote SSH host (if used):
-Remote repository path:
-Remote Docker version:
-Container image ID:
-Git revision:
-Automated acceptance log:
+Date: 2026-07-20
+Tester: Human remote operator
+Desktop VS Code version: 1.125.0
+Connection topology: Remote-SSH
+Remote SSH host: chattagraph-dev2
+Remote repository path: /home/azureuser/pyrust-debugger
+Remote Docker version: 29.5.1
+Container image ID: 394ca012021c
+Git revision: working tree with ADR 0004 follow-up changes
+Automated acceptance log: docs/research/containerized-vscode-results.md
 ```
 
 Do not record SSH credentials, private key paths, public IP addresses, or other
@@ -93,18 +93,25 @@ On the local computer:
 7. After the script exits and cleans up its test container, run
    `Dev Containers: Reopen in Container` from the same Remote-SSH window.
 8. Wait for `.devcontainer/bootstrap.sh` to finish.
-9. Confirm the lower-left remote indicator identifies the PyRust Dev
+9. Wait for `.devcontainer/install-vscode-extension.sh` to report that the
+   PyRust extension is installed or already current. The attach lifecycle
+   waits briefly for and discovers the VS Code server IPC automatically; no
+   terminal command is required after a normal rebuild.
+10. Confirm the lower-left remote indicator identifies the PyRust Dev
    Container, not only the SSH host.
-10. In the container terminal, verify:
+11. In the container terminal, verify:
 
 ```bash
 pwd
-python --version
+.venv/bin/python --version
 rustc --version
 ```
 
 The expected workspace is `/workspaces/pyrust-debugger`, Python is `3.14.6`,
 and Rust is `1.97.1`.
+
+The base image intentionally has no system `python` command. To use the venv
+interactively, run `source .venv/bin/activate`.
 
 If this repository is already open in an `SSH: <host>` VS Code window, start
 at step 3. No port forwarding, remote desktop, browser-hosted VS Code, or
@@ -113,10 +120,11 @@ Docker socket mount inside the Dev Container is required.
 ## Debugger Preparation
 
 1. Confirm the Run and Debug selector contains both `PyRust` configurations.
-2. Set a source breakpoint at
-   `research/fixtures/python_outer/src/lib.rs:6`.
-3. Set a source breakpoint at
-   `research/fixtures/rust_outer/src/main.rs:8`.
+2. Open `research/fixtures/python_outer/src/lib.rs` in the VS Code editor and
+   set a source breakpoint at line 6. Do not execute or source the file in a
+   terminal.
+3. Open `research/fixtures/rust_outer/src/main.rs` in the VS Code editor and
+   set a source breakpoint at line 8.
 
 ## Remote Troubleshooting
 
@@ -132,6 +140,13 @@ Docker socket mount inside the Dev Container is required.
   remote folder, and run `Dev Containers: Reopen in Container` again.
 - If a debug configuration is absent, wait for bootstrap to finish and run
   `Developer: Reload Window` while still attached to the Dev Container.
+- If VS Code reports that no adapter descriptor exists for `pyrust`, inspect
+  the `postAttachCommand` output and confirm
+  `env -u NODE_OPTIONS code --list-extensions --show-versions` includes
+  `pyrust.pyrust-debugger@0.0.1`.
+- If an interactive terminal reports a missing `ms-vscode.js-debug` bootloader
+  while running `code`, retry that command with `env -u NODE_OPTIONS`. This
+  stale JavaScript-debugger preload does not affect the PyRust VSIX install.
 - If a breakpoint is unverified, stop the session, confirm both fixture source
   paths above, and restart the corresponding `PyRust` configuration.
 
@@ -154,9 +169,9 @@ python_outer
 Record:
 
 ```text
-HC-CV-01 PENDING
-Evidence:
-Notes:
+HC-CV-01 PASS
+Evidence: Human Call Stack inspection at rust_inner.
+Notes: Observed rust_inner, rust_outer, python_inner, python_outer in order.
 ```
 
 ## HC-CV-02: Rust-Outer Call Stack
@@ -176,9 +191,10 @@ main
 Record:
 
 ```text
-HC-CV-02 PENDING
-Evidence:
-Notes:
+HC-CV-02 PASS
+Evidence: Human Call Stack inspection at rust_callback.
+Notes: Observed rust_callback, python_inner, python_outer, rust_outer, main
+in order. Intermediate PyO3 and Rust implementation frames were also present.
 ```
 
 ## HC-CV-03: Frame Interaction
@@ -194,14 +210,22 @@ At each required stop:
 5. Attempt evaluation on a Python frame and confirm the adapter reports it as
    unsupported without ending the session.
 
+The shipped launch configurations use CodeLLDB `consoleMode: "evaluate"`, so
+Rust expressions are entered directly in the Debug Console. If an existing
+session still reports command mode, prefix the expression with `?`, for
+example `? value`.
+
 Record:
 
 ```text
-HC-CV-03 PENDING
-Rust expression:
-Observed value:
-Evidence:
-Notes:
+HC-CV-03 PASS
+Rust expression: ? value
+Observed value: 20
+Evidence: Human Debug Console and Variables inspection at rust_inner.
+Notes: Rust local scope showed value = 20; CodeLLDB evaluated ? 1 + 1 as 2
+in both fixture directions; Python synthetic-frame evaluation reported
+"evaluation is unavailable for synthetic Python frames" without ending the
+session.
 ```
 
 ## HC-CV-04: Second Stop
@@ -214,9 +238,11 @@ Notes:
 Record:
 
 ```text
-HC-CV-04 PENDING
-Evidence:
-Notes:
+HC-CV-04 PASS
+Evidence: Human continued the Rust-outer session from its first callback stop.
+Notes: The second rust_callback stop recollected the mixed stack and replaced
+the first stop's synthetic Python frames; only current Python frames remained
+selectable.
 ```
 
 ## Completion

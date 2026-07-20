@@ -221,6 +221,7 @@ def launch_arguments(
         "args": [str(DRIVER)],
         "cwd": str(ROOT),
         "terminal": "console",
+        "consoleMode": "evaluate",
         "sourceLanguages": ["rust"],
     }
     if helper_command is not None:

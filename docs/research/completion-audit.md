@@ -58,6 +58,11 @@ Python breakpoints, Python evaluation, arbitrary boundary ordering,
 Marketplace packaging, or product-quality PID discovery. Human VS Code
 criteria `HC-CV-01` through `HC-CV-04` remain pending.
 
+The 2026-07-20 real-attach correction changed extension activation and VSIX
+installation. Targeted acceptance passes, but the clean two-lifecycle
+container command must be rerun before the recorded ADR 0004 automation
+evidence is final.
+
 To unblock those criteria when this checkout is on a remote machine, use:
 
 ```text

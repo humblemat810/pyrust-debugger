@@ -85,10 +85,7 @@ RUN codelldb_vsix=/tmp/codelldb-linux-x64.vsix \
     && test -f "${PYRUST_LIBLLDB}" \
     && rm -rf /tmp/codelldb "${codelldb_vsix}"
 
-COPY --from=extension-build /src/package.json /root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.1/package.json
-COPY --from=extension-build /src/README.md /root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.1/README.md
-COPY --from=extension-build /src/LICENSE /root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.1/LICENSE
-COPY --from=extension-build /src/out /root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.1/out
+COPY --from=extension-build /src/pyrust-debugger.vsix /opt/pyrust-extension/pyrust-debugger.vsix
 
 RUN mkdir -p /workspaces /opt/pyrust-target \
     && git config --system --add safe.directory '*'
