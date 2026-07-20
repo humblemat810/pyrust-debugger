@@ -207,9 +207,11 @@ At each required stop:
 2. Select a Rust frame and confirm its scopes load.
 3. In the Python-outer `rust_inner` frame, evaluate `value` and confirm it is
    `20`.
-4. Select each Python frame and confirm its scopes are empty.
-5. Attempt evaluation on a Python frame and confirm the adapter reports it as
-   unsupported without ending the session.
+4. Select each Python frame and confirm the `Python Locals` scope appears.
+5. Expand `Python Locals` for `python_inner` and confirm `value = 20`.
+6. With `python_inner` selected, evaluate `value + 1` and confirm it is `21`.
+7. Attempt `__import__('os')` and confirm the adapter rejects it without
+   ending the session.
 
 The shipped launch configurations use CodeLLDB `consoleMode: "evaluate"`, so
 Rust expressions are entered directly in the Debug Console. If an existing
@@ -224,9 +226,9 @@ Rust expression: ? value
 Observed value: 20
 Evidence: Human Debug Console and Variables inspection at rust_inner.
 Notes: Rust local scope showed value = 20; CodeLLDB evaluated ? 1 + 1 as 2
-in both fixture directions; Python synthetic-frame evaluation reported
-"evaluation is unavailable for synthetic Python frames" without ending the
-session.
+in both fixture directions; Python Locals showed value = 20; snapshot
+evaluation of value + 1 returned 21; __import__('os') was rejected without
+ending the session.
 ```
 
 ## HC-CV-04: Second Stop

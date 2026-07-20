@@ -26,8 +26,9 @@
 | R22 | Broad container privileges create a false sense of sandboxing | Medium | High | No privileged mode, host PID namespace, or Docker socket; document unconfined seccomp as local-proof only | Automated pass |
 | R23 | Host `.venv` or build artifacts contaminate the container result | Low | High | Fresh-state build, container-created `.venv`, artifact checks, repeated clean rebuild | Automated pass |
 | R24 | CodeLLDB extension version or discovery path drifts | Low | High | Pin 1.12.2 and support explicit adapter and `liblldb` paths | Automated pass |
-| R25 | DAP tests pass but the VS Code debug type or UI workflow is broken | Medium | High | Local wrapper extension, extension-host smoke test, and human Call Stack checklist | Human check pending |
+| R25 | DAP tests pass but the VS Code debug type or UI workflow is broken | Medium | High | Local wrapper extension, extension-host smoke test, and human Call Stack checklist | Human check passed |
 | R26 | Host VS Code, Dev Containers, or extension-test versions drift | Low | High | Record tested versions, pin the extension-host runner, and report host preflight versions | Automated pass |
+| R27 | Primitive local snapshot is unavailable or stale at a Python frame | Medium | Medium | Match frame name/path at the current stop; show locals unavailable on mismatch; retain native fallback and stale-ID checks | ADR 0005 acceptance |
 
 ## Top three gates
 
@@ -56,4 +57,11 @@ adapter integration first.
 3. Debugger permissions remain narrower than privileged or host-PID access.
    Passed.
 4. Both required mixed stacks are visible and interactive in the VS Code Call
-   Stack panel. Human validation pending.
+   Stack panel. Passed on 2026-07-20.
+
+## ADR 0005 gates
+
+1. The reader remains read-only and bounded while obtaining primitive locals.
+2. Both fixture directions expose `value = 20` and evaluate `value + 1 = 21`.
+3. Calls and other unsafe expressions are rejected locally, without target
+   execution.

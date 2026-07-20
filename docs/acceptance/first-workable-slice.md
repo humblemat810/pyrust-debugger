@@ -104,7 +104,13 @@ concise diagnostic.
 ### AC-SP-03: Synthetic Python Scopes
 
 Given a current synthetic Python frame ID, a `scopes` request must return an
-empty scope list without forwarding that frame ID to CodeLLDB.
+adapter-owned `Python Locals` scope without forwarding that frame ID to
+CodeLLDB. Its variables must include the fixture's `value = 20`, and the safe
+snapshot expression `value + 1` must return `21`.
+
+This criterion was expanded by
+[ADR 0005](../decisions/0005-read-only-python-frame-locals.md). The snapshot
+reader is read-only and does not execute Python code in the stopped process.
 
 ### AC-SP-04: Clean Protocol Failure
 

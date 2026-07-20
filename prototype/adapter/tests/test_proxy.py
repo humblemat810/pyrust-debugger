@@ -298,6 +298,13 @@ class ProxyContractTests(unittest.TestCase):
         self.assertFalse(stale["success"])
         self.assertIn("no longer valid", stale["message"])
 
+        proxy.send(131, "variables", {"variablesReference": first_id})
+        stale_variables = proxy.read_until(
+            lambda message: message.get("request_seq") == 131
+        )[0]
+        self.assertFalse(stale_variables["success"])
+        self.assertIn("no longer valid", stale_variables["message"])
+
         proxy.send(14, "emitStopped")
         stopped, _ = proxy.read_until(
             lambda message: message.get("event") == "stopped"

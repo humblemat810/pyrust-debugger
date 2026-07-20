@@ -24,19 +24,21 @@ Rust application -> embedded Python -> Rust callback
 uses the same stack-merging mechanism. ADR 0003 bounds permanently hung
 in-process unwinds with a session circuit breaker and proves this reverse stack
 at an explicit Rust callback breakpoint. It does not add Python breakpoints or
-evaluation.
+arbitrary Python evaluation.
 
 ## MVP boundary
 
-The first milestone is deliberately stack-only:
+The first milestone remains native-debugger-first:
 
 - launch Python under CodeLLDB;
 - stop at a Rust breakpoint;
 - show active Python frames and native Rust frames in one VS Code call stack;
 - support CPython 3.14 on Linux first.
 
-Python breakpoints, Python locals, and cross-language stepping are later
-milestones. See [the feasibility study](docs/feasibility.md) and
+Python breakpoints and cross-language stepping are later milestones. ADR 0005
+adds bounded read-only primitive locals and a safe snapshot expression subset
+for supported Python frames; it does not execute code in the debuggee. See
+[the feasibility study](docs/feasibility.md) and
 [the documentation index](docs/README.md).
 
 The two executable research fixtures and observed CodeLLDB results are

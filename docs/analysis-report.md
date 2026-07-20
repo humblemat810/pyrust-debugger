@@ -25,9 +25,9 @@ This direction is lower cost than starting with Rust embedding Python because:
 - repeated Python/native transitions need richer block markers, addressed after
   the one-boundary MVP.
 
-The stack-only alpha is a realistic one-engineer project. A full mixed debugger
-with Python and Rust breakpoints, locals, evaluation, and seamless stepping is
-a substantially larger product.
+The native-debugger-first alpha is a realistic one-engineer project. A full
+mixed debugger with Python and Rust breakpoints, live object inspection,
+arbitrary evaluation, and seamless stepping is a substantially larger product.
 
 ## Exact prior-art result
 
@@ -81,8 +81,8 @@ unwinding succeeded while CodeLLDB held both fixtures stopped under Linux
 ### Not in alpha
 
 - Python breakpoints;
-- Python locals or watches;
-- Python expression evaluation;
+- Python watches, object expansion, mutation, or arbitrary evaluation;
+- Python code execution in the stopped target;
 - automatic step from Python into an unknown Rust call;
 - automatic step from Rust back to a Python line;
 - Rust-outer/Python-inner launch support;
@@ -114,6 +114,14 @@ active. Rust -> Python does not naturally stop on a user Python line under a
 native-only debugger. A useful reverse-direction experience therefore needs a
 Python breakpoint engine or deliberate instrumentation, making it more than a
 stack-only follow-on.
+
+## Implemented Follow-On
+
+ADR 0005 now adds read-only primitive local snapshots for the fixed CPython
+3.14.6 Linux fixtures. The proxy reads CPython memory through exported debug
+offset metadata and evaluates only a documented AST subset against the frozen
+snapshot. This improves Python-frame inspection without changing CodeLLDB's
+sole ownership of execution.
 
 ## Architecture choice
 

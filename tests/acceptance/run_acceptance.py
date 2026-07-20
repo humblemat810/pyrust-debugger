@@ -102,8 +102,8 @@ def assert_source_frames(frames: list[dict[str, Any]]) -> None:
     expected = {
         "rust_inner": (RUST_SOURCE, 6, "research/fixtures/python_outer/src/lib.rs"),
         "rust_outer": (RUST_SOURCE, 13, "research/fixtures/python_outer/src/lib.rs"),
-        "python_inner": (PYTHON_SOURCE, 5, "research/fixtures/python_outer/app.py"),
-        "python_outer": (PYTHON_SOURCE, 9, "research/fixtures/python_outer/app.py"),
+        "python_inner": (PYTHON_SOURCE, 6, "research/fixtures/python_outer/app.py"),
+        "python_outer": (PYTHON_SOURCE, 11, "research/fixtures/python_outer/app.py"),
     }
     for frame in frames:
         name = frame["name"].rsplit("::", 1)[-1]
@@ -157,6 +157,43 @@ def happy_path() -> dict[str, Any]:
             raise DapError(
                 f"native evaluation did not return value 20: {evaluate_response}"
             )
+
+        python_id = next(
+            frame["id"]
+            for frame in first_frames
+            if frame["name"].rsplit("::", 1)[-1] == "python_inner"
+        )
+        python_scopes = client.send("scopes", {"frameId": python_id})
+        scopes = client.response(python_scopes)
+        expected_scope = {
+            "name": "Python Locals",
+            "presentationHint": "locals",
+            "variablesReference": python_id,
+            "expensive": False,
+        }
+        if scopes.get("body", {}).get("scopes") != [expected_scope]:
+            raise DapError(f"synthetic Python scope is malformed: {scopes}")
+        variables_request = client.send(
+            "variables",
+            {"variablesReference": python_id},
+        )
+        variables = client.response(variables_request).get("body", {}).get("variables")
+        if not isinstance(variables, list) or not any(
+            variable.get("name") == "value" and variable.get("value") == "20"
+            for variable in variables
+        ):
+            raise DapError(f"Python local value was not exposed: {variables}")
+        python_evaluate = client.send(
+            "evaluate",
+            {
+                "expression": "value + 1",
+                "frameId": python_id,
+                "context": "watch",
+            },
+        )
+        evaluated = client.response(python_evaluate)
+        if evaluated.get("body", {}).get("result") != "21":
+            raise DapError(f"Python evaluation returned {evaluated}")
 
         old_python_ids = {
             frame["id"]
@@ -237,7 +274,7 @@ def fallback_path(helper_command: str, timeout_ms: int | None) -> None:
         client.close()
 
 
-def synthetic_scopes() -> None:
+def synthetic_python_support() -> None:
     client, stopped = start_fixture()
     try:
         frames = user_frames(stack(client, stopped["body"]["threadId"]))
@@ -248,8 +285,44 @@ def synthetic_scopes() -> None:
         )
         request = client.send("scopes", {"frameId": python_id})
         response = client.response(request)
-        if response.get("body", {}).get("scopes") != []:
-            raise DapError("synthetic Python scopes were not empty")
+        scopes = response.get("body", {}).get("scopes")
+        if not isinstance(scopes, list) or len(scopes) != 1:
+            raise DapError(f"synthetic Python scope was not returned: {response}")
+        reference = scopes[0].get("variablesReference")
+        if reference != python_id:
+            raise DapError(f"synthetic Python scope reference is invalid: {scopes}")
+        variables_request = client.send("variables", {"variablesReference": reference})
+        variables = client.response(variables_request).get("body", {}).get("variables")
+        if not isinstance(variables, list) or not any(
+            variable.get("name") == "value" and variable.get("value") == "20"
+            for variable in variables
+        ):
+            raise DapError(f"synthetic Python locals were not returned: {variables}")
+        evaluate = client.send(
+            "evaluate",
+            {"expression": "value + 1", "frameId": python_id, "context": "watch"},
+        )
+        if client.response(evaluate).get("body", {}).get("result") != "21":
+            raise DapError("synthetic Python evaluation did not return 21")
+        unsafe_evaluate = client.send(
+            "evaluate",
+            {
+                "expression": "__import__('os')",
+                "frameId": python_id,
+                "context": "watch",
+            },
+        )
+        unsafe_response = client.wait_for(
+            lambda message: message.get("type") == "response"
+            and message.get("request_seq") == unsafe_evaluate,
+            timeout=10,
+        )
+        if unsafe_response.get("success", True):
+            raise DapError("unsafe synthetic Python evaluation was accepted")
+        if "Call" not in str(unsafe_response.get("message", "")):
+            raise DapError(
+                f"unsafe Python evaluation had an unclear failure: {unsafe_response}"
+            )
     finally:
         client.close()
 
@@ -354,7 +427,7 @@ def main() -> int:
         details,
     ):
         status["AC-SP-02"] = True
-    if run_case("synthetic scopes", synthetic_scopes, details):
+    if run_case("synthetic Python support", synthetic_python_support, details):
         status["AC-SP-03"] = True
     if run_case("clean protocol failure", clean_protocol_failure, details):
         status["AC-SP-04"] = True

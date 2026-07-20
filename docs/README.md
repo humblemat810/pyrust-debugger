@@ -8,6 +8,7 @@
 - [ADR 0002: 72-hour first workable slice](decisions/0002-72-hour-first-workable-slice.md)
 - [ADR 0003: Stabilize before Rust-outer](decisions/0003-stabilize-before-rust-outer.md)
 - [ADR 0004: Containerized VS Code validation](decisions/0004-containerized-vscode-validation.md)
+- [ADR 0005: Read-only Python frame locals](decisions/0005-read-only-python-frame-locals.md)
 - [Feasibility summary](feasibility.md)
 
 ## Research reports
@@ -29,6 +30,7 @@
 - [Rust-outer stabilization acceptance](acceptance/rust-outer-stabilization.md)
 - [Containerized VS Code acceptance](acceptance/containerized-vscode.md)
 - [Containerized VS Code manual verification](acceptance/containerized-vscode-manual.md)
+- [Python frame locals acceptance](acceptance/python-frame-locals.md)
 - [Test strategy](test-plan.md)
 - [Risk register](risk-register.md)
 
@@ -41,8 +43,12 @@ merges them into CodeLLDB's stack response.
 
 ADR 0003 is implemented. In-process unwinder timeouts are bounded by a session
 circuit breaker, and **Rust embedding Python** is proven at an explicit Rust
-callback breakpoint while lower Rust frames remain usable. Both directions
-remain stack-only and do not claim Python breakpoint or evaluation support.
+callback breakpoint while lower Rust frames remain usable.
+
+ADR 0005 adds read-only primitive local snapshots for the supported Python
+frames in both directions, plus safe snapshot expressions. It does not add
+Python breakpoints, stepping, object expansion, mutation, or in-target Python
+execution.
 
 ADR 0004 is implemented. A pinned Linux Dev Container, local `pyrust`
 extension, both launch configurations, and the two-lifecycle acceptance command

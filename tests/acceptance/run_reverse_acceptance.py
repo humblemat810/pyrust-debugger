@@ -222,8 +222,8 @@ def rp_source_navigation() -> None:
         assert_source(frame_by_name(frames, "rust_callback"), RUST_SOURCE, 9)
         assert_source(frame_by_name(frames, "rust_outer"), RUST_SOURCE, 15)
         assert_source(frame_by_name(frames, "main"), RUST_SOURCE, 29)
-        assert_source(frame_by_name(frames, "python_inner"), PYTHON_SOURCE, 2)
-        assert_source(frame_by_name(frames, "python_outer"), PYTHON_SOURCE, 6)
+        assert_source(frame_by_name(frames, "python_inner"), PYTHON_SOURCE, 4)
+        assert_source(frame_by_name(frames, "python_outer"), PYTHON_SOURCE, 9)
     finally:
         result["client"].close()
 
@@ -255,21 +255,47 @@ def rp_synthetic_behavior() -> None:
         if not isinstance(frame_id, int):
             raise DapError("synthetic Python frame has no ID")
         scopes = client.send("scopes", {"frameId": frame_id})
-        if client.response(scopes, timeout=10).get("body", {}).get("scopes") != []:
-            raise DapError("synthetic Python scopes were not empty")
+        scope_list = client.response(scopes, timeout=10).get("body", {}).get("scopes")
+        if not isinstance(scope_list, list) or len(scope_list) != 1:
+            raise DapError(f"synthetic Python scopes were malformed: {scope_list}")
+        reference = scope_list[0].get("variablesReference")
+        if reference != frame_id:
+            raise DapError(f"synthetic Python scope reference was malformed: {scope_list}")
+        variables = client.send("variables", {"variablesReference": reference})
+        variable_list = client.response(variables, timeout=10).get("body", {}).get(
+            "variables"
+        )
+        if not isinstance(variable_list, list) or not any(
+            variable.get("name") == "value" and variable.get("value") == "20"
+            for variable in variable_list
+        ):
+            raise DapError(f"synthetic Python local value was not returned: {variable_list}")
         evaluate = client.send(
             "evaluate",
-            {"expression": "value", "frameId": frame_id, "context": "watch"},
+            {"expression": "value + 1", "frameId": frame_id, "context": "watch"},
         )
-        response = client.wait_for(
+        response = client.response(evaluate, timeout=10)
+        if response.get("body", {}).get("result") != "21":
+            raise DapError(f"synthetic Python evaluation did not return 21: {response}")
+        unsafe_evaluate = client.send(
+            "evaluate",
+            {
+                "expression": "__import__('os')",
+                "frameId": frame_id,
+                "context": "watch",
+            },
+        )
+        unsafe_response = client.wait_for(
             lambda message: message.get("type") == "response"
-            and message.get("request_seq") == evaluate,
+            and message.get("request_seq") == unsafe_evaluate,
             timeout=10,
         )
-        if response.get("success", True):
-            raise DapError("synthetic Python evaluation unexpectedly succeeded")
-        if "synthetic" not in json.dumps(response).lower():
-            raise DapError(f"synthetic evaluation lacked clear diagnostic: {response}")
+        if unsafe_response.get("success", True):
+            raise DapError("unsafe synthetic Python evaluation was accepted")
+        if "Call" not in str(unsafe_response.get("message", "")):
+            raise DapError(
+                f"unsafe Python evaluation had an unclear failure: {unsafe_response}"
+            )
     finally:
         result["client"].close()
 
@@ -425,7 +451,7 @@ def main() -> int:
         "AC-BF-03": "tests.acceptance.test_reverse_contract.ReverseStabilizationContractTests.test_ac_bf_03_timeout_diagnostic_is_emitted_once_across_epochs",
         "AC-BF-05": "tests.acceptance.test_reverse_contract.ReverseStabilizationContractTests.test_ac_bf_05_late_result_cannot_allocate_into_new_epoch",
         "AC-RP-02": "tests.acceptance.test_reverse_contract.ReverseShapeContractTests.test_ac_rp_02_required_reverse_order_and_post_merge_paging",
-        "AC-RP-05": "tests.acceptance.test_reverse_contract.ReverseShapeContractTests.test_ac_rp_05_synthetic_frames_have_no_scopes_or_evaluation",
+        "AC-RP-05": "tests.acceptance.test_reverse_contract.ReverseShapeContractTests.test_ac_rp_05_synthetic_frames_expose_snapshot_locals",
         "AC-RP-06": "tests.acceptance.test_reverse_contract.ReverseShapeContractTests.test_ac_rp_06_unknown_boundaries_preserve_native_stack",
     }
     for criterion, test_name in unit_cases.items():

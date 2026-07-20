@@ -102,8 +102,13 @@ routed to CodeLLDB successfully.
 ### AC-RP-05: Synthetic Python Behavior
 
 Synthetic Python frame IDs must be valid only for the current stop epoch.
-`scopes` returns an empty list, and Python-frame evaluation returns a clear
-unsupported response without forwarding the synthetic ID to CodeLLDB.
+`scopes` returns an adapter-owned `Python Locals` scope. The `python_inner`
+fixture frame exposes `value = 20`, and snapshot evaluation of `value + 1`
+returns `21` without forwarding the synthetic ID to CodeLLDB or executing
+Python in the target process.
+
+This criterion was expanded by
+[ADR 0005](../decisions/0005-read-only-python-frame-locals.md).
 
 ### AC-RP-06: Reverse Fallback
 
@@ -157,4 +162,3 @@ AC-RP-07 PASS
 - two separate VS Code call-stack trees;
 - screenshots without DAP assertions;
 - claiming Python breakpoint or evaluation support.
-

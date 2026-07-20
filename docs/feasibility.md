@@ -67,12 +67,14 @@ messages needed for mixed frames:
 - `threads`: retain CodeLLDB thread IDs and native thread metadata;
 - `stackTrace`: fetch native frames, remotely unwind the matching Python
   thread, and merge;
-- `scopes`: initially return an empty scope for synthetic Python frames;
+- `scopes`, `variables`, and `evaluate`: serve bounded read-only local
+  snapshots for synthetic Python frames;
 - all other requests and events: pass through unchanged.
 
 Synthetic frame IDs must occupy a proxy-owned range and remain stable for one
 stop epoch. Paging (`startFrame` and `levels`) must be applied after merging,
-not independently to the native and Python frame lists.
+not independently to the native and Python frame lists. ADR 0005 limits Python
+evaluation to a safe local AST subset and does not execute code in the target.
 
 ### Why CPython 3.14 changes the design
 

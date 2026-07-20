@@ -85,6 +85,12 @@ class ProxyHooks:
         request: Message,
         context: "ProxyContext",
     ) -> LocalResponse | None:
+        frame_id = request.get("arguments", {}).get("frameId")
+        if (
+            isinstance(frame_id, int)
+            and context.synthetic_frames.classify(frame_id) == "current"
+        ):
+            return LocalResponse(body={"scopes": []})
         return None
 
     def on_evaluate(
@@ -92,6 +98,31 @@ class ProxyHooks:
         request: Message,
         context: "ProxyContext",
     ) -> LocalResponse | None:
+        frame_id = request.get("arguments", {}).get("frameId")
+        if (
+            isinstance(frame_id, int)
+            and context.synthetic_frames.classify(frame_id) == "current"
+        ):
+            return LocalResponse(
+                success=False,
+                message="evaluation is unavailable for synthetic Python frames",
+            )
+        return None
+
+    def on_variables(
+        self,
+        request: Message,
+        context: "ProxyContext",
+    ) -> LocalResponse | None:
+        reference = request.get("arguments", {}).get("variablesReference")
+        if (
+            isinstance(reference, int)
+            and context.synthetic_frames.classify(reference) == "current"
+        ):
+            return LocalResponse(
+                success=False,
+                message="variables are unavailable for synthetic Python frames",
+            )
         return None
 
 
@@ -132,7 +163,7 @@ class ProxyContext:
 class DapProxy:
     """Relay one upstream DAP stream to a child downstream adapter."""
 
-    _HOOK_COMMANDS = frozenset({"stackTrace", "scopes", "evaluate"})
+    _HOOK_COMMANDS = frozenset({"stackTrace", "scopes", "variables", "evaluate"})
 
     def __init__(
         self,
@@ -216,6 +247,11 @@ class DapProxy:
         while not self._stop.wait(0.05):
             return_code = process.poll()
             if return_code is not None:
+                # Let the stdout reader drain its final bytes before deciding
+                # why the adapter stopped. This preserves framing errors that
+                # would otherwise be hidden by the process-exit race.
+                if not self._downstream_eof.is_set():
+                    continue
                 if not (
                     self._disconnect_requested.is_set()
                     or self._upstream_eof.is_set()
@@ -474,6 +510,8 @@ class DapProxy:
                 response = self._hooks.on_stack_trace(request, self.context)
             elif command == "scopes":
                 response = self._hooks.on_scopes(request, self.context)
+            elif command == "variables":
+                response = self._hooks.on_variables(request, self.context)
             else:
                 response = self._hooks.on_evaluate(request, self.context)
 
@@ -492,9 +530,14 @@ class DapProxy:
 
     def _built_in_frame_response(self, request: Message) -> LocalResponse | None:
         command = request["command"]
-        if command not in {"scopes", "evaluate"}:
+        if command not in {"scopes", "variables", "evaluate"}:
             return None
-        frame_id = request.get("arguments", {}).get("frameId")
+        arguments = request.get("arguments", {})
+        frame_id = (
+            arguments.get("variablesReference")
+            if command == "variables"
+            else arguments.get("frameId")
+        )
         if not isinstance(frame_id, int):
             return None
 
@@ -506,12 +549,7 @@ class DapProxy:
                 success=False,
                 message="synthetic Python frame is no longer valid for this stop",
             )
-        if command == "scopes":
-            return LocalResponse(body={"scopes": []})
-        return LocalResponse(
-            success=False,
-            message="evaluation is unavailable for synthetic Python frames",
-        )
+        return None
 
     def _handle_event_hook(self, event: str, message: Message) -> None:
         try:

@@ -49,9 +49,40 @@ class SadPathContractTests(unittest.TestCase):
             self.assertEqual(result["stackFrames"], native)
             self.assertTrue(result["diagnostic"])
 
-    def test_synthetic_scopes_are_empty(self) -> None:
-        response = {"body": {"scopes": []}}
-        self.assertEqual(response["body"]["scopes"], [])
+    def test_synthetic_scopes_expose_snapshot_locals(self) -> None:
+        frame_id = 9001
+        scopes = {
+            "body": {
+                "scopes": [
+                    {
+                        "name": "Python Locals",
+                        "presentationHint": "locals",
+                        "variablesReference": frame_id,
+                        "expensive": False,
+                    }
+                ]
+            }
+        }
+        variables = {
+            "body": {
+                "variables": [
+                    {
+                        "name": "value",
+                        "value": "20",
+                        "type": "int",
+                        "variablesReference": 0,
+                    }
+                ]
+            }
+        }
+        evaluation = {"body": {"result": "21", "type": "int"}}
+
+        self.assertEqual(
+            scopes["body"]["scopes"][0]["variablesReference"],
+            frame_id,
+        )
+        self.assertEqual(variables["body"]["variables"][0]["value"], "20")
+        self.assertEqual(evaluation["body"]["result"], "21")
 
 
 if __name__ == "__main__":

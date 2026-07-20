@@ -213,7 +213,8 @@ main
 
 6. click every required frame and verify source navigation;
 7. verify Rust-frame scopes and one deterministic Rust expression;
-8. verify Python-frame scopes are empty and evaluation reports unsupported;
+8. verify Python-frame `Python Locals` scopes, the fixture `value = 20`, and
+   safe snapshot evaluation of `value + 1 = 21`;
 9. continue to the second callback stop and verify stale Python frame IDs are
    not reused.
 
@@ -240,7 +241,8 @@ Remote-host setup and recovery steps are recorded in
 - browser-hosted VS Code or code-server;
 - multiple debugger/debuggee containers;
 - Kubernetes, remote Docker hosts, or Docker-in-Docker;
-- debugpy, Python breakpoints, or Python expression evaluation;
+- debugpy, Python breakpoints, or arbitrary/in-target Python expression
+  evaluation;
 - arbitrary user applications or generalized launch configuration;
 - macOS, Windows, ARM64, or emulated x86_64 validation;
 - security hardening for untrusted debuggee code;

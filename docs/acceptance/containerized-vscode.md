@@ -152,8 +152,11 @@ For every required frame:
 - clicking the frame opens the expected source and line;
 - Rust scopes load through CodeLLDB;
 - one deterministic Rust expression evaluates successfully;
-- Python scopes are empty;
-- Python evaluation reports unsupported without ending the session.
+- each Python frame exposes a `Python Locals` scope;
+- the `python_inner` frame exposes `value = 20`;
+- entering `value + 1` with that Python frame selected returns `21`;
+- unsupported expressions fail without ending the session or executing code in
+  the target process.
 
 ### HC-CV-04: Second Stop
 

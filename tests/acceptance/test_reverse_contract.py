@@ -8,7 +8,7 @@ from unittest.mock import patch
 from prototype.adapter.mixed_stack import MixedStackHooks
 from prototype.adapter.proxy import ProxyContext
 from prototype.adapter.state import ProxySessionState
-from prototype.python.pyrust_stack import Frame, ThreadStack
+from prototype.python.pyrust_stack import Frame, LocalFrame, ThreadStack
 
 
 class _ContextProxy:
@@ -315,19 +315,88 @@ class ReverseShapeContractTests(unittest.TestCase):
             ["python_inner", "python_outer", "<module>"],
         )
 
-    def test_ac_rp_05_synthetic_frames_have_no_scopes_or_evaluation(self) -> None:
+    def test_ac_rp_05_synthetic_frames_expose_snapshot_locals(self) -> None:
         fixture = _ReverseContractFixture()
-        fixture.state.synthetic_frames.allocate(
-            77,
-            ("python", 0),
-            {"name": "python_inner"},
-            native_frame_ids=[101, 102],
+        stacks = (
+            ThreadStack(
+                thread_id=77,
+                frames=(
+                    Frame("python_inner", "/fixture/embedded.py", 4),
+                    Frame("python_outer", "/fixture/embedded.py", 9),
+                ),
+            ),
         )
-        synthetic_id = 2_147_483_647
+        snapshots = (
+            LocalFrame(
+                "python_inner",
+                "/fixture/embedded.py",
+                {"value": 20, "label": "rust-to-python"},
+            ),
+            LocalFrame("python_outer", "/fixture/embedded.py", {"value": 21}),
+        )
+        with (
+            patch(
+                "prototype.adapter.mixed_stack.read_python_stacks",
+                return_value=stacks,
+            ),
+            patch(
+                "prototype.adapter.mixed_stack.read_python_locals",
+                return_value=snapshots,
+            ),
+        ):
+            response = fixture.hooks.on_stack_trace(
+                {"arguments": {"threadId": 77}},
+                fixture.context,
+            )
+
+        assert response.body is not None
+        synthetic_id = response.body["stackFrames"][1]["id"]
         self.assertEqual(
             fixture.state.synthetic_frames.classify(synthetic_id),
             "current",
         )
+        scopes = fixture.hooks.on_scopes(
+            {"arguments": {"frameId": synthetic_id}},
+            fixture.context,
+        )
+        self.assertEqual(
+            scopes.body,
+            {
+                "scopes": [
+                    {
+                        "name": "Python Locals",
+                        "presentationHint": "locals",
+                        "variablesReference": synthetic_id,
+                        "expensive": False,
+                    }
+                ]
+            },
+        )
+        variables = fixture.hooks.on_variables(
+            {"arguments": {"variablesReference": synthetic_id}},
+            fixture.context,
+        )
+        assert variables.body is not None
+        self.assertIn(
+            {
+                "name": "value",
+                "value": "20",
+                "type": "int",
+                "variablesReference": 0,
+                "evaluateName": "value",
+            },
+            variables.body["variables"],
+        )
+        evaluation = fixture.hooks.on_evaluate(
+            {
+                "arguments": {
+                    "frameId": synthetic_id,
+                    "expression": "value + 1",
+                }
+            },
+            fixture.context,
+        )
+        self.assertEqual(evaluation.body, {"result": "21", "type": "int", "variablesReference": 0})
 
     def test_ac_rp_06_unknown_boundaries_preserve_native_stack(self) -> None:
         fixture = _ReverseContractFixture()

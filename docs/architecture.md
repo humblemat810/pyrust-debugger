@@ -255,5 +255,6 @@ Initial settings:
 3. Evaluate migration to LLDB scripted frames with an `SBProcess` CPython
    reader.
 4. Rust-outer/Python-inner fixture.
-5. Python frame locals through bounded remote object reading.
+5. Python frame locals through bounded remote primitive reading. Implemented
+   for the fixed CPython 3.14.6 Linux fixtures by ADR 0005.
 6. debugpy integration for Python breakpoints and stepping.

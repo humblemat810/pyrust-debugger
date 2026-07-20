@@ -61,7 +61,8 @@ mixed-stack logic enabled.
 - Allocate synthetic frame IDs per stop epoch.
 - Detect Python/native boundaries and merge frames.
 - Apply DAP paging after the merge.
-- Return empty scopes for Python frames in this milestone.
+- Read bounded primitive Python locals from the stopped CPython process.
+- Evaluate a documented, read-only subset against the frozen local snapshot.
 
 Exit criterion: the acceptance stack appears in one VS Code call-stack tree.
 
@@ -77,8 +78,8 @@ Exit criterion: unsupported cases degrade to ordinary CodeLLDB behavior.
 ## Explicit non-goals
 
 - Python breakpoints;
-- Python variable inspection;
-- Python expression evaluation;
+- Python object expansion, mutation, or arbitrary expression evaluation;
+- Python code execution in the stopped process;
 - stepping from a Python line into an unknown Rust function;
 - Rust -> embedded Python launch support;
 - Windows support.

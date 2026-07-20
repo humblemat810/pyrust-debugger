@@ -8,7 +8,12 @@ import time
 from prototype.adapter.mixed_stack import MixedStackHooks
 from prototype.adapter.proxy import ProxyContext
 from prototype.adapter.state import ProxySessionState
-from prototype.python.pyrust_stack import Frame, StackReadError, ThreadStack
+from prototype.python.pyrust_stack import (
+    Frame,
+    LocalFrame,
+    StackReadError,
+    ThreadStack,
+)
 
 
 class _ContextProxy:
@@ -497,6 +502,125 @@ class MixedStackHooksTests(unittest.TestCase):
             forwarded["arguments"],
             {"consoleMode": "evaluate"},
         )
+
+    def test_python_locals_scopes_and_safe_evaluation(self) -> None:
+        stacks = (
+            ThreadStack(
+                thread_id=77,
+                frames=(
+                    Frame("python_inner", "/work/app.py", 6),
+                    Frame("python_outer", "/work/app.py", 11),
+                ),
+            ),
+        )
+        snapshots = (
+            LocalFrame(
+                "python_inner",
+                "/work/app.py",
+                {"value": 20, "label": "python-to-rust"},
+            ),
+            LocalFrame("python_outer", "/work/app.py", {"value": 20}),
+        )
+        with (
+            patch(
+                "prototype.adapter.mixed_stack.read_python_stacks",
+                return_value=stacks,
+            ),
+            patch(
+                "prototype.adapter.mixed_stack.read_python_locals",
+                return_value=snapshots,
+            ),
+        ):
+            stack_response = self.hooks.on_stack_trace(
+                {"arguments": {"threadId": 77}},
+                self.context,
+            )
+
+        assert stack_response.body is not None
+        python_id = stack_response.body["stackFrames"][2]["id"]
+        scopes = self.hooks.on_scopes(
+            {"arguments": {"frameId": python_id}},
+            self.context,
+        )
+        self.assertEqual(
+            scopes.body,
+            {
+                "scopes": [
+                    {
+                        "name": "Python Locals",
+                        "presentationHint": "locals",
+                        "variablesReference": python_id,
+                        "expensive": False,
+                    }
+                ]
+            },
+        )
+        variables = self.hooks.on_variables(
+            {"arguments": {"variablesReference": python_id}},
+            self.context,
+        )
+        self.assertEqual(
+            variables.body,
+            {
+                "variables": [
+                    {
+                        "name": "label",
+                        "value": "'python-to-rust'",
+                        "type": "str",
+                        "variablesReference": 0,
+                        "evaluateName": "label",
+                    },
+                    {
+                        "name": "value",
+                        "value": "20",
+                        "type": "int",
+                        "variablesReference": 0,
+                        "evaluateName": "value",
+                    },
+                ]
+            },
+        )
+        evaluated = self.hooks.on_evaluate(
+            {
+                "arguments": {
+                    "frameId": python_id,
+                    "expression": "value + 1",
+                }
+            },
+            self.context,
+        )
+        self.assertEqual(
+            evaluated.body,
+            {"result": "21", "type": "int", "variablesReference": 0},
+        )
+        boolean_short_circuit = self.hooks.on_evaluate(
+            {
+                "arguments": {
+                    "frameId": python_id,
+                    "expression": "label or __import__('os')",
+                }
+            },
+            self.context,
+        )
+        self.assertEqual(
+            boolean_short_circuit.body,
+            {
+                "result": "'python-to-rust'",
+                "type": "str",
+                "variablesReference": 0,
+            },
+        )
+        unsupported = self.hooks.on_evaluate(
+            {
+                "arguments": {
+                    "frameId": python_id,
+                    "expression": "__import__('os')",
+                }
+            },
+            self.context,
+        )
+        self.assertFalse(unsupported.success)
+        self.assertIn("Call", unsupported.message)
 
     def test_in_process_timeout_opens_session_circuit_and_bounds_workers(
         self,

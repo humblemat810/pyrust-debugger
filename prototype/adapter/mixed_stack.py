@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,12 @@ import subprocess
 from threading import Lock, Thread
 from typing import Any, Mapping
 
-from prototype.python.pyrust_stack import StackReadError, read_python_stacks
+from prototype.python.pyrust_stack import (
+    LocalReadError,
+    StackReadError,
+    read_python_locals,
+    read_python_stacks,
+)
 
 from .proxy import LocalResponse, Message, ProxyContext, ProxyHooks
 
@@ -34,6 +40,10 @@ class InProcessUnwinderUnavailable(HelperFailure):
 
 class StaleStopError(RuntimeError):
     """The debuggee continued while a stack request was in flight."""
+
+
+class PythonExpressionError(ValueError):
+    """A request cannot be evaluated from a frozen Python local snapshot."""
 
 
 class MixedStackHooks(ProxyHooks):
@@ -88,6 +98,115 @@ class MixedStackHooks(ProxyHooks):
         with self._lock:
             self._stopped_thread_id = None
         return event
+
+    def on_scopes(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        frame = self._current_python_frame(request, context)
+        if frame is None:
+            return None
+        locals_snapshot = frame.get("locals")
+        if not isinstance(locals_snapshot, dict):
+            return LocalResponse(
+                body={
+                    "scopes": [
+                        {
+                            "name": "Python Locals (unavailable)",
+                            "presentationHint": "locals",
+                            "variablesReference": 0,
+                            "expensive": False,
+                        }
+                    ]
+                }
+            )
+        return LocalResponse(
+            body={
+                "scopes": [
+                    {
+                        "name": "Python Locals",
+                        "presentationHint": "locals",
+                        # The high synthetic frame ID is proxy-owned and is
+                        # reused only as a scope reference for this stop.
+                        "variablesReference": request["arguments"]["frameId"],
+                        "expensive": False,
+                    }
+                ]
+            }
+        )
+
+    def on_variables(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        reference = (request.get("arguments") or {}).get("variablesReference")
+        if not isinstance(reference, int):
+            return None
+        synthetic = context.synthetic_frames.get(reference)
+        if synthetic is None:
+            return None
+        frame = synthetic.value
+        if not isinstance(frame, dict):
+            return LocalResponse(
+                success=False,
+                message="synthetic Python frame has invalid local state",
+            )
+        locals_snapshot = frame.get("locals")
+        if not isinstance(locals_snapshot, dict):
+            return LocalResponse(
+                success=False,
+                message=str(
+                    frame.get(
+                        "localsError",
+                        "Python locals are unavailable for this frame",
+                    )
+                ),
+            )
+        variables = [
+            _dap_variable(name, value)
+            for name, value in sorted(locals_snapshot.items())
+            if isinstance(name, str)
+        ]
+        return LocalResponse(body={"variables": variables})
+
+    def on_evaluate(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        frame = self._current_python_frame(request, context)
+        if frame is None:
+            return None
+        locals_snapshot = frame.get("locals")
+        if not isinstance(locals_snapshot, dict):
+            return LocalResponse(
+                success=False,
+                message=str(
+                    frame.get(
+                        "localsError",
+                        "Python evaluation is unavailable for this frame",
+                    )
+                ),
+            )
+        expression = (request.get("arguments") or {}).get("expression")
+        if not isinstance(expression, str):
+            return LocalResponse(
+                success=False,
+                message="Python evaluation requires a string expression",
+            )
+        try:
+            value = _evaluate_python_expression(expression, locals_snapshot)
+        except PythonExpressionError as error:
+            return LocalResponse(success=False, message=str(error))
+        return LocalResponse(
+            body={
+                "result": _display_python_value(value),
+                "type": _python_type_name(value),
+                "variablesReference": 0,
+            }
+        )
 
     def on_stack_trace(
         self,
@@ -225,8 +344,44 @@ class MixedStackHooks(ProxyHooks):
             frames = stack.get("frames")
             if not isinstance(frames, list):
                 raise HelperFailure("helper thread has no frame list")
-            return [self._validate_python_frame(frame) for frame in frames]
+            validated = [self._validate_python_frame(frame) for frame in frames]
+            if helper_command:
+                return validated
+            return self._attach_local_snapshots(
+                validated,
+                process_id=process_id,
+                thread_id=thread_id,
+            )
         raise HelperFailure(f"helper returned no Python stack for thread {thread_id}")
+
+    def _attach_local_snapshots(
+        self,
+        frames: list[dict[str, Any]],
+        *,
+        process_id: int,
+        thread_id: int,
+    ) -> list[dict[str, Any]]:
+        try:
+            snapshots = read_python_locals(process_id, thread_id)
+        except LocalReadError as error:
+            return [
+                {
+                    **frame,
+                    "localsError": f"Python locals unavailable: {error}",
+                }
+                for frame in frames
+            ]
+
+        for index, frame in enumerate(frames):
+            if index >= len(snapshots):
+                frame["localsError"] = "Python locals were not found for this frame"
+                continue
+            snapshot = snapshots[index]
+            if snapshot.name != frame["name"] or snapshot.path != frame["path"]:
+                frame["localsError"] = "Python locals did not match the active frame"
+                continue
+            frame["locals"] = dict(snapshot.locals)
+        return frames
 
     def _run_in_process_helper(
         self,
@@ -476,3 +631,144 @@ class MixedStackHooks(ProxyHooks):
             "PyRust in-process unwinder timeout; circuit opened for this session\n",
             category="stderr",
         )
+
+    @staticmethod
+    def _current_python_frame(
+        request: Message,
+        context: ProxyContext,
+    ) -> dict[str, Any] | None:
+        frame_id = (request.get("arguments") or {}).get("frameId")
+        if not isinstance(frame_id, int):
+            return None
+        synthetic = context.synthetic_frames.get(frame_id)
+        if synthetic is None or not isinstance(synthetic.value, dict):
+            return None
+        return synthetic.value
+
+
+def _dap_variable(name: str, value: object) -> dict[str, Any]:
+    return {
+        "name": name,
+        "value": _display_python_value(value),
+        "type": _python_type_name(value),
+        "variablesReference": 0,
+        "evaluateName": name,
+    }
+
+
+def _display_python_value(value: object) -> str:
+    if hasattr(value, "type_name"):
+        return f"<{getattr(value, 'type_name')}>"
+    return repr(value)
+
+
+def _python_type_name(value: object) -> str:
+    if hasattr(value, "type_name"):
+        return str(getattr(value, "type_name"))
+    return type(value).__name__
+
+
+def _evaluate_python_expression(
+    expression: str,
+    locals_snapshot: Mapping[str, object],
+) -> object:
+    try:
+        parsed = ast.parse(expression, mode="eval")
+    except SyntaxError as error:
+        raise PythonExpressionError(f"invalid Python expression: {error.msg}") from error
+
+    def evaluate(node: ast.AST) -> object:
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, (str, int, float, bool, bytes)) or node.value is None:
+                return node.value
+        elif isinstance(node, ast.Name):
+            if node.id not in locals_snapshot:
+                raise PythonExpressionError(f"name {node.id!r} is not available")
+            value = locals_snapshot[node.id]
+            if hasattr(value, "type_name"):
+                raise PythonExpressionError(
+                    f"name {node.id!r} has unsupported type "
+                    f"{getattr(value, 'type_name')!r}"
+                )
+            return value
+        elif isinstance(node, ast.UnaryOp) and isinstance(
+            node.op,
+            (ast.UAdd, ast.USub, ast.Not),
+        ):
+            value = evaluate(node.operand)
+            try:
+                if isinstance(node.op, ast.UAdd):
+                    return +value  # type: ignore[operator]
+                if isinstance(node.op, ast.USub):
+                    return -value  # type: ignore[operator]
+                return not value
+            except TypeError as error:
+                raise PythonExpressionError(str(error)) from error
+        elif isinstance(node, ast.BinOp) and isinstance(
+            node.op,
+            (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod),
+        ):
+            left = evaluate(node.left)
+            right = evaluate(node.right)
+            try:
+                if isinstance(node.op, ast.Add):
+                    return left + right  # type: ignore[operator]
+                if isinstance(node.op, ast.Sub):
+                    return left - right  # type: ignore[operator]
+                if isinstance(node.op, ast.Mult):
+                    return left * right  # type: ignore[operator]
+                if isinstance(node.op, ast.Div):
+                    return left / right  # type: ignore[operator]
+                if isinstance(node.op, ast.FloorDiv):
+                    return left // right  # type: ignore[operator]
+                return left % right  # type: ignore[operator]
+            except (ArithmeticError, TypeError) as error:
+                raise PythonExpressionError(str(error)) from error
+        elif isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
+            result = evaluate(node.values[0])
+            for value in node.values[1:]:
+                if isinstance(node.op, ast.And):
+                    if not result:
+                        return result
+                elif result:
+                    return result
+                result = evaluate(value)
+            return result
+        elif isinstance(node, ast.Compare):
+            left = evaluate(node.left)
+            for operator, comparator in zip(node.ops, node.comparators, strict=True):
+                right = evaluate(comparator)
+                try:
+                    if isinstance(operator, ast.Eq):
+                        matches = left == right
+                    elif isinstance(operator, ast.NotEq):
+                        matches = left != right
+                    elif isinstance(operator, ast.Lt):
+                        matches = left < right
+                    elif isinstance(operator, ast.LtE):
+                        matches = left <= right
+                    elif isinstance(operator, ast.Gt):
+                        matches = left > right
+                    elif isinstance(operator, ast.GtE):
+                        matches = left >= right
+                    else:
+                        raise PythonExpressionError(
+                            "comparison operator is not supported"
+                        )
+                except TypeError as error:
+                    raise PythonExpressionError(str(error)) from error
+                if not matches:
+                    return False
+                left = right
+            return True
+        raise PythonExpressionError(
+            f"Python expression node {type(node).__name__} is not supported"
+        )
+
+    result = evaluate(parsed.body)
+    if hasattr(result, "type_name") or not isinstance(
+        result,
+        (str, int, float, bool, bytes, type(None)),
+    ):
+        raise PythonExpressionError("expression result has an unsupported type")
+    return result

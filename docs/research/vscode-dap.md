@@ -69,13 +69,11 @@ correctness first and add caching per stop epoch.
 
 Selecting a Python frame causes a `scopes` request.
 
-For the stack-only alpha, return either:
-
-- an empty `scopes` body; or
-- one `Python frame (locals unavailable)` scope with no variables.
-
-The first option is simpler. The adapter must not forward a synthetic frame ID
-to CodeLLDB.
+For the implemented fixed fixture, return one adapter-owned `Python Locals`
+scope and serve bounded primitive snapshot variables. A safe expression subset
+is evaluated in the proxy from that snapshot. The adapter must not forward a
+synthetic Python frame ID to CodeLLDB or execute Python in the target process.
+See [ADR 0005](../decisions/0005-read-only-python-frame-locals.md).
 
 ### Presentation
 
