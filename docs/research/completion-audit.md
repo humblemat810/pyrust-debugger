@@ -52,16 +52,12 @@ main
 ```
 
 ADR 0004 adds a local fixture-bound VS Code extension and pinned Linux Dev
-Container. Its automated acceptance passes `AC-CV-01` through `AC-CV-10`.
-This remains a fixed, single-thread, stack-only proof. It does not provide
-Python breakpoints, Python evaluation, arbitrary boundary ordering,
-Marketplace packaging, or product-quality PID discovery. Human VS Code
-criteria `HC-CV-01` through `HC-CV-04` remain pending.
-
-The 2026-07-20 real-attach correction changed extension activation and VSIX
-installation. Targeted acceptance passes, but the clean two-lifecycle
-container command must be rerun before the recorded ADR 0004 automation
-evidence is final.
+Container. Its final clean two-lifecycle automated acceptance passed
+`AC-CV-01` through `AC-CV-10` on 2026-07-20. This remains a fixed,
+single-thread, stack-only proof. It does not provide Python breakpoints,
+Python evaluation, arbitrary boundary ordering, Marketplace packaging, or
+product-quality PID discovery. Human VS Code criteria `HC-CV-01` through
+`HC-CV-04` also passed on 2026-07-20.
 
 To unblock those criteria when this checkout is on a remote machine, use:
 

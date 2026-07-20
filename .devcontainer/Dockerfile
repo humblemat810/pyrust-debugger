@@ -87,6 +87,16 @@ RUN codelldb_vsix=/tmp/codelldb-linux-x64.vsix \
 
 COPY --from=extension-build /src/pyrust-debugger.vsix /opt/pyrust-extension/pyrust-debugger.vsix
 
+# Preinstall before VS Code Server first scans extensions. The attach helper can
+# later refresh this same VSIX through VS Code's extension manager.
+RUN mkdir -p /root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.1 \
+    && unzip -q /opt/pyrust-extension/pyrust-debugger.vsix -d /tmp/pyrust-vsix \
+    && cp -a /tmp/pyrust-vsix/extension/. \
+        /root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.1/ \
+    && test -f \
+        /root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.1/out/extension.js \
+    && rm -rf /tmp/pyrust-vsix
+
 RUN mkdir -p /workspaces /opt/pyrust-target \
     && git config --system --add safe.directory '*'
 

@@ -94,9 +94,10 @@ On the local computer:
    `Dev Containers: Reopen in Container` from the same Remote-SSH window.
 8. Wait for `.devcontainer/bootstrap.sh` to finish.
 9. Wait for `.devcontainer/install-vscode-extension.sh` to report that the
-   PyRust extension is installed or already current. The attach lifecycle
-   waits briefly for and discovers the VS Code server IPC automatically; no
-   terminal command is required after a normal rebuild.
+   PyRust extension is installed or already current when VS Code IPC is
+   available. The image already preinstalls the packaged extension before
+   VS Code first scans extensions, so no terminal command is required after a
+   normal rebuild.
 10. Confirm the lower-left remote indicator identifies the PyRust Dev
    Container, not only the SSH host.
 11. In the container terminal, verify:

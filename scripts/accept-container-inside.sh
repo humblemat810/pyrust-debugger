@@ -53,6 +53,8 @@ if (manifest.main !== "./out/extension.js") {
 
     test -f "$EXTENSION/pyrust-debugger.vsix"
     test -f /opt/pyrust-extension/pyrust-debugger.vsix
+    test -f \
+        /root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.1/out/extension.js
     test -x "$ROOT/.devcontainer/install-vscode-extension.sh"
     node -e '
 const fs = require("node:fs");

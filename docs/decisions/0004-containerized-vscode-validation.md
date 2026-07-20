@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented; human acceptance pending.
+Accepted.
 
 ## Date
 
@@ -297,16 +297,16 @@ created isolated `.venv`, Node dependency, and Cargo target volumes, ran both
 mixed-stack acceptance commands, started a pinned VS Code 1.125.0 extension
 host in both development-path and CLI-installed VSIX modes, stopped the
 container cleanly, destroyed the volumes, and repeated the result in a second
-container lifecycle. The Dev Container installs that VSIX through
-`postAttachCommand`; copying an extension directory into the image is
-insufficient because the running VS Code Server owns extension registration.
+container lifecycle. The image unpacks the VSIX into the server extension
+directory before VS Code first scans extensions. `postAttachCommand` can
+refresh that same VSIX through the extension manager when VS Code IPC is
+available.
 
 The detailed environment and observed output are recorded in
 [Containerized VS Code Results](../research/containerized-vscode-results.md).
 After the 2026-07-20 attach-path correction, the final clean two-lifecycle
-acceptance command must be rerun before automated evidence is considered
-current. The ADR remains short of accepted status until that rerun and one
-human complete
+acceptance rerun passed `AC-CV-01` through `AC-CV-10` on 2026-07-20. Human
+Call Stack validation also passed on 2026-07-20; see
 [Containerized VS Code Manual Verification](../acceptance/containerized-vscode-manual.md).
 
 ### Test only with the existing DAP clients

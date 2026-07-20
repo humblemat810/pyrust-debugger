@@ -30,7 +30,26 @@ BASELINE_STATUS="$TMP/git-status.before"
 CURRENT_STATUS="$TMP/git-status.after"
 
 cd "$ROOT"
-git status --porcelain=v1 --untracked-files=all >"$BASELINE_STATUS"
+
+snapshot_workspace() {
+    local path mode digest
+    while IFS= read -r -d '' path; do
+        if [[ -L "$path" ]]; then
+            mode="$(stat --format='%a' -- "$path")"
+            digest="symlink:$(readlink -- "$path")"
+        elif [[ -f "$path" ]]; then
+            mode="$(stat --format='%a' -- "$path")"
+            digest="$(sha256sum -- "$path" | cut -d' ' -f1)"
+        else
+            continue
+        fi
+        printf '%s\t%s\t%s\n' "$mode" "$digest" "$path"
+    done < <(git ls-files -co --exclude-standard -z)
+}
+
+# Check source content rather than Git index state: acceptance must not rewrite
+# files, but a user may stage their already-existing edits while it runs.
+snapshot_workspace | LC_ALL=C sort >"$BASELINE_STATUS"
 
 project_containers() {
     docker ps -aq \
@@ -66,9 +85,9 @@ finish() {
     trap - EXIT
 
     cleanup
-    git status --porcelain=v1 --untracked-files=all >"$CURRENT_STATUS"
+    snapshot_workspace | LC_ALL=C sort >"$CURRENT_STATUS"
     if ! cmp -s "$BASELINE_STATUS" "$CURRENT_STATUS"; then
-        echo "container acceptance: worktree changed during acceptance" >&2
+        echo "container acceptance: workspace content changed during acceptance" >&2
         diff -u "$BASELINE_STATUS" "$CURRENT_STATUS" >&2 || true
         RESULTS[AC-CV-10]=FAIL
         status=1
@@ -223,6 +242,6 @@ mark_pass AC-CV-09
 
 exec_inside clean-processes
 stop_container_normally
-git status --porcelain=v1 --untracked-files=all >"$CURRENT_STATUS"
+snapshot_workspace | LC_ALL=C sort >"$CURRENT_STATUS"
 cmp -s "$BASELINE_STATUS" "$CURRENT_STATUS"
 mark_pass AC-CV-10

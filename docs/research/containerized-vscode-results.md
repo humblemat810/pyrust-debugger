@@ -8,7 +8,7 @@ record.
 
 ## Environment
 
-Test date: July 18, 2026.
+Test dates: July 18 and July 20, 2026.
 
 | Component | Version |
 | --- | --- |
@@ -97,9 +97,7 @@ AC-RP-01 through AC-RP-07 PASS
 
 The same regression set passed again after container and volume recreation.
 
-## Remaining Gate
-
-### 2026-07-20 Follow-Up
+## 2026-07-20 Follow-Up
 
 A real Dev Containers attach exposed two issues that the original headless
 test did not cover:
@@ -114,8 +112,11 @@ inside the running Dev Container with no terminal-specific VS Code
 environment, then repeated to prove it is idempotent. The updated first-slice,
 reverse-slice, and both extension-host smoke modes pass.
 
-The final `./scripts/accept-container.sh` clean two-lifecycle rerun remains
-pending after these changes because it intentionally stops and removes the
-active development container. Human criteria `HC-CV-01` through `HC-CV-04`
-also remain pending in
+Human criteria `HC-CV-01` through `HC-CV-04` passed on 2026-07-20 and are
+recorded in
 [Containerized VS Code Manual Verification](../acceptance/containerized-vscode-manual.md).
+
+The final `./scripts/accept-container.sh` clean two-lifecycle rerun passed
+`AC-CV-01` through `AC-CV-10` on 2026-07-20. It used a no-cache first image
+build, recreated the project volumes for each lifecycle, and verified that
+the acceptance process did not change workspace file content.
