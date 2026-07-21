@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
@@ -26,7 +27,10 @@ MULTIPROCESS_DRIVER = (
 )
 MULTIPROCESS_WORKER = ROOT / "tests" / "acceptance" / "multiprocess_worker.py"
 RUST_OUTER_FIXTURE = ROOT / "research" / "fixtures" / "rust_outer"
-RUST_OUTER_BINARY = RUST_OUTER_FIXTURE / "target" / "debug" / "rust-outer-python-inner"
+RUST_OUTER_TARGET = Path(
+    os.environ.get("CARGO_TARGET_DIR", str(RUST_OUTER_FIXTURE / "target"))
+)
+RUST_OUTER_BINARY = RUST_OUTER_TARGET / "debug" / "rust-outer-python-inner"
 RUST_OUTER_SOURCE = RUST_OUTER_FIXTURE / "src" / "main.rs"
 EMBEDDED_PYTHON_SOURCE = RUST_OUTER_FIXTURE / "src" / "embedded.py"
 

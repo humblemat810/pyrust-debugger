@@ -1,0 +1,6 @@
+{
+  // Let VS Code create source breakpoints before a PyRust/debugpy session
+  // exists. PyRust resolves Python breakpoints after debugpy registers.
+  "debug.allowBreakpointsEverywhere": true,
+  "editor.glyphMargin": true
+}

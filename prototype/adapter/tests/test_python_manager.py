@@ -179,6 +179,16 @@ class PythonProcessManagerTests(unittest.TestCase):
             frame_id = stack["body"]["stackFrames"][0]["id"]
             self.assertGreaterEqual(frame_id, 1_700_000_000)
             self.assertEqual(
+                manager.recent_frames(700),
+                [
+                    {
+                        "name": "python_worker",
+                        "path": "/workspace/worker.py",
+                        "line": 24,
+                    }
+                ],
+            )
+            self.assertEqual(
                 manager.scopes(frame_id)["body"]["scopes"][0]["name"],
                 "Locals",
             )
@@ -200,6 +210,10 @@ class PythonProcessManagerTests(unittest.TestCase):
             manager.continue_thread(virtual_thread_id)
             self.assertIsNone(state.coordinator.execution_owner(700))
             self.assertIsNone(manager.native_frame_route(frame_id))
+            self.assertEqual(
+                manager.recent_frames(700)[0]["name"],
+                "python_worker",
+            )
             self.assertEqual(
                 created[0].calls[-1],
                 (

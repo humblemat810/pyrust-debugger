@@ -41,6 +41,11 @@ For each Python process, PyRust:
 
 For an embedded interpreter in the Rust-outer fixture, the Rust host imports
 the bootstrap explicitly when the same opt-in environment is present.
+That bootstrap supplies the proxy's CPython executable when embedded CPython
+has an empty `sys.executable`; debugpy's normal external adapter needs that
+path to start. The external adapter is retained because debugpy's in-process
+adapter disturbs CPython 3.14 external remote-stack recovery at later Rust
+stops.
 The bootstrap waits only for a bounded interval. If the private debugpy attach
 fails, the coordinator records that failure and the embedded interpreter
 continues so CodeLLDB can still reach later Rust breakpoints.
@@ -69,6 +74,13 @@ read-only, externally recovered snapshot and must not be presented as
 supporting arbitrary Python execution. In particular, `import sys`, function
 calls, object expansion, and mutation are unsupported at that stop. Users
 must stop at a Python breakpoint for full Python expression evaluation.
+
+In the embedded Rust-outer fixture, debugpy instrumentation can make CPython
+3.14's external `RemoteUnwinder` reject the process at the immediately
+following Rust callback. When that happens, PyRust may restore the last
+debugpy-owned `python_inner`/`python_outer` source frames so the call chain
+remains visible. Those restored frames have no live locals or evaluation and
+are explicitly snapshot-only.
 
 ## Concurrency
 

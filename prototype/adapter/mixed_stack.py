@@ -10,6 +10,7 @@ from pathlib import Path
 from queue import Empty, Queue
 import shlex
 import subprocess
+import sys
 from tempfile import TemporaryDirectory
 from threading import Lock, Thread
 from typing import Any, Mapping
@@ -632,6 +633,7 @@ class MixedStackHooks(ProxyHooks):
         if not self._is_mixed_stack_candidate(native_frames):
             merged = native_frames
         else:
+            python_process_id: int | None = None
             try:
                 self._require_epoch(
                     context,
@@ -639,11 +641,12 @@ class MixedStackHooks(ProxyHooks):
                     process_id=child_process,
                     thread_id=thread_id,
                 )
+                python_process_id = (
+                    context.state.process_id_for_thread(thread_id)
+                    or self._fallback_process_id(thread_id)
+                )
                 python_frames = self._read_python_frames(
-                    process_id=(
-                        context.state.process_id_for_thread(thread_id)
-                        or self._fallback_process_id(thread_id)
-                    ),
+                    process_id=python_process_id,
                     thread_id=thread_id,
                 )
                 self._require_epoch(
@@ -675,6 +678,31 @@ class MixedStackHooks(ProxyHooks):
                 HelperFailure,
                 StackReadError,
             ) as error:
+                cached_frames = (
+                    python_manager.recent_frames(python_process_id)
+                    if python_manager is not None
+                    and python_process_id is not None
+                    else []
+                )
+                if cached_frames and self._can_restore_debugpy_snapshot(
+                    native_frames,
+                    cached_frames,
+                ):
+                    merged = self._merge_frames(
+                        native_frames,
+                        cached_frames,
+                        thread_id,
+                        synthetic_process,
+                        native_ids,
+                        context,
+                        synthetic_epoch,
+                    )
+                    self._diagnose_once(
+                        context,
+                        "PyRust used the last debugpy Python stack snapshot "
+                        "after CPython remote unwinding failed\n",
+                    )
+                    return self._page_stack_frames(merged, arguments)
                 if isinstance(error, InProcessHelperTimeout):
                     self._diagnose_in_process_timeout_once(context)
                 try:
@@ -696,16 +724,21 @@ class MixedStackHooks(ProxyHooks):
                     self._diagnose_once(context, f"PyRust helper failure: {error}")
                 merged = native_frames
 
+        return self._page_stack_frames(merged, arguments)
+
+    @staticmethod
+    def _page_stack_frames(
+        frames: list[dict[str, Any]],
+        arguments: Mapping[str, Any],
+    ) -> LocalResponse:
         start = arguments.get("startFrame", 0)
         levels = arguments.get("levels")
         start = start if isinstance(start, int) and start >= 0 else 0
         if isinstance(levels, int) and levels > 0:
-            page = merged[start : start + levels]
+            page = frames[start : start + levels]
         else:
-            page = merged[start:]
-        return LocalResponse(
-            body={"stackFrames": page, "totalFrames": len(merged)}
-        )
+            page = frames[start:]
+        return LocalResponse(body={"stackFrames": page, "totalFrames": len(frames)})
 
     def _fallback_process_id(self, thread_id: int) -> int:
         # Linux exposes each task's thread-group leader in /proc/<tid>/status.
@@ -1010,6 +1043,20 @@ class MixedStackHooks(ProxyHooks):
         ]
 
     @staticmethod
+    def _can_restore_debugpy_snapshot(
+        native_frames: list[dict[str, Any]],
+        python_frames: list[dict[str, Any]],
+    ) -> bool:
+        if [MixedStackHooks._frame_leaf(frame) for frame in native_frames[:1]] != [
+            "rust_callback"
+        ]:
+            return False
+        return [str(frame.get("name", "")) for frame in python_frames[:2]] == [
+            "python_inner",
+            "python_outer",
+        ]
+
+    @staticmethod
     def _frame_leaf(frame: Mapping[str, Any]) -> str:
         return str(frame.get("name", "")).rsplit("::", 1)[-1]
 
@@ -1122,6 +1169,7 @@ class MixedStackHooks(ProxyHooks):
                 "PYRUST_DEBUGPY_ENABLE": "1",
                 "PYRUST_DEBUGPY_REGISTRY": str(registry),
                 "PYRUST_DEBUGPY_WAIT_FOR_CLIENT": "1",
+                "PYRUST_DEBUGPY_PYTHON": sys.executable,
                 "PYDEVD_DISABLE_FILE_VALIDATION": "1",
                 "PYTHONPATH": (
                     f"{python_bootstrap}{os.pathsep}{debugpy_site_packages}"

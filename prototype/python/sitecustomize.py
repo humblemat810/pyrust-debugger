@@ -91,7 +91,16 @@ def _bootstrap() -> None:
     # second server through its own subprocess support.
     import debugpy
 
-    debugpy.configure({"subProcess": False})
+    debugpy_python = os.environ.get("PYRUST_DEBUGPY_PYTHON")
+    configure_options = {"subProcess": False}
+    if debugpy_python:
+        configure_options["python"] = debugpy_python
+    debugpy.configure(configure_options)
+    if debugpy_python and not sys.executable:
+        # PyO3's embedded interpreter starts without sys.executable. debugpy's
+        # normal adapter process needs it, while the in-process adapter breaks
+        # CPython 3.14's external RemoteUnwinder at later Rust stops.
+        sys.executable = debugpy_python
     host, port = debugpy.listen(("127.0.0.1", 0))
     registry = Path(registry_value)
     registry.mkdir(parents=True, exist_ok=True)

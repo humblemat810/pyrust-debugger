@@ -79,6 +79,7 @@ class PythonProcessManager:
         self._frame_keys: dict[tuple[int, int, int], int] = {}
         self._variable_routes: dict[int, _VariableRoute] = {}
         self._variable_keys: dict[tuple[int, int, int], int] = {}
+        self._recent_frames: dict[int, list[dict[str, Any]]] = {}
         self._next_thread_id = _THREAD_ID_START
         self._next_frame_id = _FRAME_ID_START
         self._next_variable_reference = _VARIABLE_REFERENCE_START
@@ -210,10 +211,21 @@ class PythonProcessManager:
             for frame in frames
             if isinstance(frame, dict)
         ]
+        self._record_recent_frames(route.process_id, translated)
         return {
             "success": True,
             "body": {"stackFrames": translated, "totalFrames": len(translated)},
         }
+
+    def recent_frames(self, process_id: int) -> list[dict[str, Any]]:
+        """Return the last debugpy-owned Python stack for one live process.
+
+        The coordinator uses this only as a read-only fallback when CPython's
+        external unwinder cannot read the immediately following Rust callback.
+        """
+
+        with self._lock:
+            return [dict(frame) for frame in self._recent_frames.get(process_id, ())]
 
     def native_frame_route(self, frame_id: object) -> _FrameRoute | None:
         return self._frame_routes.get(frame_id) if isinstance(frame_id, int) else None
@@ -463,6 +475,7 @@ class PythonProcessManager:
             with self._lock:
                 exited_session = self._sessions.pop(process_id, None)
                 self._retired_process_ids.add(process_id)
+                self._recent_frames.pop(process_id, None)
             if exited_session is not None:
                 exited_session.transport.close()
             self._state.remove_process(process_id)
@@ -591,6 +604,31 @@ class PythonProcessManager:
                 for key, virtual in self._variable_keys.items()
                 if key[0] != process_id
             }
+
+    def _record_recent_frames(
+        self,
+        process_id: int,
+        frames: list[dict[str, Any]],
+    ) -> None:
+        snapshot: list[dict[str, Any]] = []
+        for frame in frames:
+            source = frame.get("source")
+            path = source.get("path") if isinstance(source, dict) else None
+            line = frame.get("line")
+            name = frame.get("name")
+            if (
+                isinstance(name, str)
+                and name
+                and isinstance(path, str)
+                and path
+                and isinstance(line, int)
+                and not isinstance(line, bool)
+                and line > 0
+            ):
+                snapshot.append({"name": name, "path": path, "line": line})
+        if snapshot:
+            with self._lock:
+                self._recent_frames[process_id] = snapshot
 
     def _require_session(self, process_id: int) -> _PythonSession:
         with self._lock:
