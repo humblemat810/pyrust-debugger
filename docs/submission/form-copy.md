@@ -94,8 +94,6 @@ developer-tools, vscode, debugging, rust, python, pyo3, dap, codex
 - [ ] Verify the live category/track selection is **Developer Tools**.
 - [ ] Verify whether the form requires a public repository, public video, or
   additional license declaration.
-- [ ] Confirm whether the current proprietary prototype license is acceptable
-  for the chosen repository visibility. Do not claim an open-source license
-  that the repository does not contain.
+- [x] Repository license: Apache-2.0.
 - [ ] Verify whether the form has a required disclosure for GPT-5.6 and Codex.
 - [ ] Trim the full description only after preserving the limitations paragraph.

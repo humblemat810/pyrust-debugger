@@ -3,6 +3,8 @@
 **A Developer Tools prototype for mixed CPython 3.14 and Rust debugging in VS
 Code.**
 
+Licensed under [Apache-2.0](LICENSE).
+
 PyRust combines CodeLLDB's native stack with read-only CPython frame recovery,
 then presents the result through one DAP session. It also adds a Process Tree
 that groups real processes and native threads without inventing false nesting

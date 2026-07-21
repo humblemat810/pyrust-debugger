@@ -53,9 +53,8 @@ its external artifact exists.
 - [ ] Select **Developer Tools**.
 - [ ] Paste the copy from [Form Copy](form-copy.md).
 - [ ] Link the repository and video.
-- [ ] Confirm the repository visibility and licensing choice. The current
-  extension license does not permit redistribution; do not represent PyRust as
-  open source unless that is deliberately changed.
+- [x] Apache-2.0 is declared in the repository root, VS Code extension, Python
+  metadata, and Rust fixture metadata.
 - [ ] Include the limitations section without edits that weaken it.
 - [ ] Describe Codex use with the evidence in the `Built With Codex` section.
 - [ ] Review every claim against its linked command before submitting.

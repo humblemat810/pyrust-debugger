@@ -4,7 +4,7 @@
   "description": "Fixture-bound mixed Python and Rust stack debugger.",
   "version": "0.0.5",
   "publisher": "pyrust",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "engines": {
     "vscode": "^1.125.0"
   },
