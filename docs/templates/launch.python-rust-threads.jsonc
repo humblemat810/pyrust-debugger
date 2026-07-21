@@ -1,0 +1,17 @@
+{
+  // Copy this object into your application's .vscode/launch.json "configurations".
+  // Build your PyO3 extension with debug symbols before starting this launch.
+  "type": "pyrust",
+  "request": "launch",
+  "name": "PyRust: Python entry with Rust child threads",
+  "program": "${workspaceFolder}/.venv/bin/python",
+  "args": [
+    "${workspaceFolder}/src/your_application.py"
+  ],
+  "cwd": "${workspaceFolder}",
+  "terminal": "console",
+  "consoleMode": "evaluate",
+  "sourceLanguages": [
+    "rust"
+  ]
+}

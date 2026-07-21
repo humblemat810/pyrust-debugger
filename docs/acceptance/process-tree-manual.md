@@ -17,7 +17,7 @@ env -u NODE_OPTIONS /opt/node/bin/npm run --prefix vscode-extension package
 rm -f ~/.pyrust-debugger/vsix.sha256
 bash .devcontainer/install-vscode-extension.sh
 env -u NODE_OPTIONS code --list-extensions --show-versions | grep -Fx \
-  'pyrust.pyrust-debugger@0.0.2'
+  'pyrust.pyrust-debugger@0.0.5'
 ```
 
 3. Run `Developer: Reload Window`. If the extension was updated while a
@@ -83,7 +83,29 @@ Rust process
 The Rust workers must remain siblings. Clicking one opens `rust_callback`;
 Call Stack shows the embedded Python frames.
 
-## QC-PT-03: Python Parent With Child Processes
+## QC-PT-03: Python Entry With Rust Child Threads
+
+1. Select `PyRust: Python and Rust Threads`.
+2. Set a breakpoint at `research/fixtures/python_outer/src/lib.rs:6`.
+3. Start debugging.
+
+Expected shape:
+
+```text
+Python process
+  python-worker-A / python-worker-B thread
+  rust-child-20-1 / rust-child-20-2 thread (stopped)
+  rust-child-40-1 / rust-child-40-2 thread (stopped or running)
+```
+
+All entries are siblings under one process. The Rust child threads must not be
+shown below their Python caller thread: creating a Rust OS thread breaks the
+caller/callee stack relationship. Clicking a stopped `rust-child-*` thread
+opens `rust_inner`; its Call Stack includes `rust_inner` and
+`rust_outer_with_rust_threads`, but does not fabricate a Python frame from a
+different OS thread.
+
+## QC-PT-04: Python Parent With Child Processes
 
 1. Select `PyRust: Python Processes`.
 2. Set a breakpoint at `research/fixtures/python_outer/src/lib.rs:6`.
@@ -109,7 +131,7 @@ Call Stack must include `rust_inner`, `rust_outer`, and `python_worker`.
 Continue. The stopped marker must move to the sibling child, never become
 nested under the first child.
 
-## QC-PT-04: Rust Parent With Python Child Processes
+## QC-PT-05: Rust Parent With Python Child Processes
 
 1. Select `PyRust: Rust Processes`.
 2. Set a breakpoint at `research/fixtures/python_outer/src/lib.rs:6`.
@@ -129,7 +151,7 @@ The same child-thread focus behavior must work. On session end, all nodes
 disappear. If an individual child exits before its sibling, only that child
 and its thread disappear.
 
-## QC-PT-05: Async Is Not a Task Tree
+## QC-PT-06: Async Is Not a Task Tree
 
 1. Select `PyRust: Python Async`.
 2. Set the breakpoint at `research/fixtures/python_outer/src/lib.rs:6`.

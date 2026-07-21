@@ -2,7 +2,7 @@
   "name": "pyrust-debugger",
   "displayName": "PyRust Debugger",
   "description": "Fixture-bound mixed Python and Rust stack debugger.",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "pyrust",
   "license": "UNLICENSED",
   "engines": {
@@ -252,6 +252,21 @@
             "env": {
               "LD_LIBRARY_PATH": "${env:PYRUST_PYTHON_LIBDIR}"
             },
+            "terminal": "console",
+            "consoleMode": "evaluate",
+            "sourceLanguages": [
+              "rust"
+            ]
+          },
+          {
+            "type": "pyrust",
+            "request": "launch",
+            "name": "PyRust: Python and Rust Threads",
+            "program": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+              "${workspaceFolder}/tests/acceptance/python_rust_thread_fixture_driver.py"
+            ],
+            "cwd": "${workspaceFolder}",
             "terminal": "console",
             "consoleMode": "evaluate",
             "sourceLanguages": [

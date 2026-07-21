@@ -70,6 +70,22 @@
     {
       "type": "pyrust",
       "request": "launch",
+      "name": "PyRust: Python and Rust Threads",
+      "program": "${workspaceFolder}/.venv/bin/python",
+      "args": [
+        "${workspaceFolder}/tests/acceptance/python_rust_thread_fixture_driver.py"
+      ],
+      "cwd": "${workspaceFolder}",
+      "terminal": "console",
+      "consoleMode": "evaluate",
+      "sourceLanguages": [
+        "rust"
+      ],
+      "preLaunchTask": "PyRust: Build Python Outer"
+    },
+    {
+      "type": "pyrust",
+      "request": "launch",
       "name": "PyRust: Python Async",
       "program": "${workspaceFolder}/.venv/bin/python",
       "args": [

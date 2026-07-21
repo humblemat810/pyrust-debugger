@@ -37,6 +37,7 @@
 - [Process-tree coordinator acceptance](acceptance/process-tree-coordinator.md)
 - [Process-tree manual QC guide](acceptance/process-tree-manual.md)
 - [Process and threads manual QC guide](acceptance/process-thread-mode-manual.md)
+- [Reuse a Python-to-Rust thread launch](usage/python-rust-threads.md)
 - [Async coordinator acceptance](acceptance/async-coordinator.md)
 - [Test strategy](test-plan.md)
 - [Risk register](risk-register.md)

@@ -3,9 +3,12 @@
 This local workspace extension registers the fixture-bound `pyrust` debug type
 and launches the Python DAP proxy in the repository.
 
-It is intended only for the Linux x86_64 Dev Container defined by ADR 0004.
-Python breakpoints, Python evaluation, and Marketplace packaging are not
-supported.
+It is intended for the Linux x86_64 Dev Container defined by ADR 0004.
+The launch configuration can be adapted to another PyO3 application, but the
+current VSIX does not bundle the Python DAP adapter; external workspaces must
+point `pyrust.adapterPath` and `pyrust.pythonPath` at a PyRust debugger
+checkout. Python breakpoints, Python evaluation, and Marketplace packaging are
+not supported.
 
 ## Process Tree
 

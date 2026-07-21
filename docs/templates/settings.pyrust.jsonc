@@ -1,0 +1,10 @@
+{
+  // These paths belong to the PyRust debugger checkout, not necessarily to
+  // the application workspace containing launch.json.
+  "pyrust.pythonPath": "/absolute/path/to/pyrust-debugger/.venv/bin/python",
+  "pyrust.adapterPath": "/absolute/path/to/pyrust-debugger/prototype/adapter/__main__.py",
+
+  // Set both when CodeLLDB is not discoverable through the VS Code extension.
+  "pyrust.codelldbPath": "/absolute/path/to/codelldb",
+  "pyrust.liblldbPath": "/absolute/path/to/liblldb.so"
+}
