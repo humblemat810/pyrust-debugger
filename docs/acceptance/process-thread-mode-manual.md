@@ -20,6 +20,11 @@ black-box command:
    - `pyrustProcessMode: children`;
    - the `PyRust: Build Rust Process and Threads` pre-launch task.
 
+**Do not run** `PyRust: Focus Process-Tree Thread` or
+`PyRust: Focus Process-Tree Stack Frame` from the Command Palette. Those are
+tree-item actions and require a clicked thread or frame in **PyRust Process
+Tree**.
+
 ## Breakpoint
 
 Set the native source breakpoint exactly at:
@@ -40,6 +45,9 @@ shape:
 Rust parent process (pid <P>, command .../rust-outer-python-process-threads, running)
   process-A (pid <A>, role Python child process, command .../process_thread_worker.py process-A 20, stopped)
     process-A-worker-1 (tid <A1>, stopped)
+      pyrust_native::rust_inner             lib.rs:6
+      pyrust_native::rust_outer             lib.rs:13
+      python_worker                         process_thread_worker.py:...
     process-A-worker-2 (tid <A2>, running)
   process-B (pid <B>, role Python child process, command .../process_thread_worker.py process-B 40, running or stopped)
     process-B-worker-1 (tid <B1>, running or stopped)
@@ -55,7 +63,8 @@ Within each child, worker 2 intentionally waits until worker 1 continues;
 this makes per-worker progression deterministic while keeping both real OS
 threads visible.
 The process description and tooltip must show the role, PID, state, and
-command summary.
+command summary. Expand a stopped worker to see its mixed Rust/Python frames
+under that thread. Running threads do not expose a stack until they stop.
 
 Clicking a worker thread must focus its top source frame at
 `lib.rs:6`. The standard DAP Threads view remains flat.

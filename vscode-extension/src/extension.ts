@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import {
+  focusFrame,
   focusThread,
   PyRustProcessTreeProvider,
 } from "./processTree";
@@ -127,6 +128,7 @@ export function activate(context: vscode.ExtensionContext): void {
       new PyRustConfigurationProvider(),
     ),
     vscode.window.registerTreeDataProvider("pyrustProcessTree", processTree),
+    vscode.commands.registerCommand("pyrust.focusFrame", focusFrame),
     vscode.commands.registerCommand("pyrust.focusThread", focusThread),
     vscode.debug.onDidStartDebugSession((session) => {
       if (session.type === "pyrust") {

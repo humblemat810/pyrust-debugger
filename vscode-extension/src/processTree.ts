@@ -21,9 +21,26 @@ export interface PyRustProcessTree {
   processes: PyRustProcess[];
 }
 
+export interface PyRustStackFrame {
+  id: number;
+  name: string;
+  line?: number;
+  column?: number;
+  source?: {
+    name?: string;
+    path?: string;
+  };
+}
+
 export type ProcessTreeNode =
   | { kind: "process"; process: PyRustProcess }
-  | { kind: "thread"; process: PyRustProcess; thread: PyRustThread };
+  | { kind: "thread"; process: PyRustProcess; thread: PyRustThread }
+  | {
+      kind: "frame";
+      process: PyRustProcess;
+      thread: PyRustThread;
+      frame: PyRustStackFrame;
+    };
 
 export function rootProcesses(tree: PyRustProcessTree): PyRustProcess[] {
   const known = new Set(tree.processes.map((process) => process.processId));
@@ -67,6 +84,14 @@ export function processTreeChildren(
   return [...threads, ...children];
 }
 
+export function stackFrameNodes(
+  process: PyRustProcess,
+  thread: PyRustThread,
+  frames: PyRustStackFrame[],
+): ProcessTreeNode[] {
+  return frames.map((frame) => ({ kind: "frame", process, thread, frame }));
+}
+
 export class PyRustProcessTreeProvider
   implements vscode.TreeDataProvider<ProcessTreeNode>
 {
@@ -76,6 +101,7 @@ export class PyRustProcessTreeProvider
   readonly onDidChangeTreeData = this.changedEmitter.event;
   private tree: PyRustProcessTree = { processes: [] };
   private session: vscode.DebugSession | undefined;
+  private readonly stackFrames = new Map<string, PyRustStackFrame[]>();
 
   async refresh(session?: vscode.DebugSession): Promise<void> {
     if (session?.type === "pyrust") {
@@ -83,6 +109,7 @@ export class PyRustProcessTreeProvider
     }
     if (!this.session) {
       this.tree = { processes: [] };
+      this.stackFrames.clear();
       this.changedEmitter.fire(undefined);
       return;
     }
@@ -94,6 +121,7 @@ export class PyRustProcessTreeProvider
     } catch {
       this.tree = { processes: [] };
     }
+    this.stackFrames.clear();
     this.changedEmitter.fire(undefined);
   }
 
@@ -101,6 +129,7 @@ export class PyRustProcessTreeProvider
     if (!session || session === this.session) {
       this.session = undefined;
       this.tree = { processes: [] };
+      this.stackFrames.clear();
       this.changedEmitter.fire(undefined);
     }
   }
@@ -125,44 +154,108 @@ export class PyRustProcessTreeProvider
       return item;
     }
 
+    if (node.kind === "thread") {
+      const item = new vscode.TreeItem(
+        `${node.thread.name} (tid ${node.thread.threadId})`,
+        node.thread.isStopped
+          ? vscode.TreeItemCollapsibleState.Collapsed
+          : vscode.TreeItemCollapsibleState.None,
+      );
+      item.description = node.thread.isStopped ? "stopped" : "running";
+      item.tooltip = [
+        node.thread.name,
+        `TID: ${node.thread.threadId}`,
+        `State: ${node.thread.isStopped ? "stopped" : "running"}`,
+        node.thread.isStopped
+          ? "Expand to inspect the mixed Rust/Python stack."
+          : "No stack is available while this thread is running.",
+      ].join("\n");
+      item.contextValue = "pyrustThread";
+      item.iconPath = new vscode.ThemeIcon(
+        node.thread.isStopped ? "debug-pause" : "debug-stackframe",
+      );
+      item.command = {
+        command: "pyrust.focusThread",
+        title: "Focus PyRust Thread",
+        arguments: [node],
+      };
+      return item;
+    }
+
+    const sourceLabel = node.frame.source?.name ?? node.frame.source?.path;
+    const location = sourceLabel && node.frame.line
+      ? `${sourceLabel}:${node.frame.line}`
+      : sourceLabel;
     const item = new vscode.TreeItem(
-      `${node.thread.name} (tid ${node.thread.threadId})`,
+      node.frame.name,
       vscode.TreeItemCollapsibleState.None,
     );
-    item.description = node.thread.isStopped ? "stopped" : "running";
+    item.description = location;
     item.tooltip = [
-      node.thread.name,
-      `TID: ${node.thread.threadId}`,
-      `State: ${node.thread.isStopped ? "stopped" : "running"}`,
+      node.frame.name,
+      node.frame.source?.path ?? "Source unavailable",
+      node.frame.line ? `Line: ${node.frame.line}` : "Line unavailable",
     ].join("\n");
-    item.contextValue = "pyrustThread";
-    item.iconPath = new vscode.ThemeIcon(
-      node.thread.isStopped ? "debug-pause" : "debug-stackframe",
-    );
+    item.contextValue = "pyrustFrame";
+    item.iconPath = new vscode.ThemeIcon("debug-stackframe");
     item.command = {
-      command: "pyrust.focusThread",
-      title: "Focus PyRust Thread",
+      command: "pyrust.focusFrame",
+      title: "Focus PyRust Stack Frame",
       arguments: [node],
     };
     return item;
   }
 
-  getChildren(node?: ProcessTreeNode): ProcessTreeNode[] {
+  async getChildren(node?: ProcessTreeNode): Promise<ProcessTreeNode[]> {
     if (!node) {
       return rootProcesses(this.tree).map((process) => ({
         kind: "process",
         process,
       }));
     }
-    if (node.kind === "thread") {
+    if (node.kind === "frame") {
       return [];
     }
-    return processTreeChildren(this.tree, node.process);
+    if (node.kind === "process") {
+      return processTreeChildren(this.tree, node.process);
+    }
+    if (!node.thread.isStopped) {
+      return [];
+    }
+    const frames = await this.threadFrames(node);
+    return stackFrameNodes(node.process, node.thread, frames);
+  }
+
+  private async threadFrames(
+    node: Extract<ProcessTreeNode, { kind: "thread" }>,
+  ): Promise<PyRustStackFrame[]> {
+    const key = `${node.process.processId}:${node.thread.threadId}`;
+    const cached = this.stackFrames.get(key);
+    if (cached) {
+      return cached;
+    }
+    if (!this.session) {
+      return [];
+    }
+    try {
+      const response = (await this.session.customRequest("stackTrace", {
+        threadId: node.thread.threadId,
+        startFrame: 0,
+        levels: 40,
+      })) as { stackFrames?: PyRustStackFrame[] };
+      const frames = Array.isArray(response.stackFrames)
+        ? response.stackFrames.filter(isStackFrame)
+        : [];
+      this.stackFrames.set(key, frames);
+      return frames;
+    } catch {
+      return [];
+    }
   }
 }
 
-export async function focusThread(node: ProcessTreeNode): Promise<void> {
-  if (node.kind !== "thread") {
+export async function focusThread(node?: ProcessTreeNode): Promise<void> {
+  if (!node || node.kind !== "thread") {
     return;
   }
   const session = vscode.debug.activeDebugSession;
@@ -176,25 +269,30 @@ export async function focusThread(node: ProcessTreeNode): Promise<void> {
     threadId: node.thread.threadId,
     startFrame: 0,
     levels: 1,
-  })) as {
-    stackFrames?: Array<{
-      name?: string;
-      line?: number;
-      source?: { path?: string };
-    }>;
-  };
-  const frame = response.stackFrames?.[0];
-  const sourcePath = frame?.source?.path;
-  if (sourcePath && frame?.line) {
-    const document = await vscode.workspace.openTextDocument(sourcePath);
-    await vscode.window.showTextDocument(document, {
-      selection: new vscode.Range(frame.line - 1, 0, frame.line - 1, 0),
-      preserveFocus: false,
-    });
-  }
+  })) as { stackFrames?: PyRustStackFrame[] };
+  await openFrame(response.stackFrames?.[0]);
   void vscode.window.showInformationMessage(
     `Focused PyRust thread ${node.thread.threadId} in ${node.process.label}.`,
   );
+}
+
+export async function focusFrame(node?: ProcessTreeNode): Promise<void> {
+  if (!node || node.kind !== "frame") {
+    return;
+  }
+  await openFrame(node.frame);
+}
+
+async function openFrame(frame: PyRustStackFrame | undefined): Promise<void> {
+  const sourcePath = frame?.source?.path;
+  if (!sourcePath || !frame?.line) {
+    return;
+  }
+  const document = await vscode.workspace.openTextDocument(sourcePath);
+  await vscode.window.showTextDocument(document, {
+    selection: new vscode.Range(frame.line - 1, 0, frame.line - 1, 0),
+    preserveFocus: false,
+  });
 }
 
 function isProcessTree(value: unknown): value is PyRustProcessTree {
@@ -203,4 +301,13 @@ function isProcessTree(value: unknown): value is PyRustProcessTree {
   }
   const processes = (value as { processes?: unknown }).processes;
   return Array.isArray(processes);
+}
+
+function isStackFrame(value: unknown): value is PyRustStackFrame {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof (value as { id?: unknown }).id === "number" &&
+      typeof (value as { name?: unknown }).name === "string",
+  );
 }

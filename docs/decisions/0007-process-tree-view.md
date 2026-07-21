@@ -34,8 +34,10 @@ The adapter exposes a read-only `pyrust/processTree` custom request from
 ```text
 parent process
   attached thread
+    mixed Rust/Python frame
   child process
     attached thread
+      mixed Rust/Python frame
 ```
 
 Only structural relationships are indented:
@@ -49,7 +51,8 @@ standard Call Stack, not this tree.
 
 Selecting a thread invokes **PyRust: Focus Process-Tree Thread**, requests that
 thread's DAP `stackTrace`, and opens its top source frame. It does not alter
-normal Call Stack selection.
+normal Call Stack selection. Expanding a stopped thread lazily renders its
+mixed stack beneath that thread in the custom tree.
 
 ## Consequences
 

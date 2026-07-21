@@ -19,6 +19,8 @@ bash .devcontainer/install-vscode-extension.sh
 
 3. Run `Developer: Reload Window`.
 4. Open **Run and Debug**. In the Debug sidebar, find **PyRust Process Tree**.
+   It stays visible even before a PyRust session starts and is empty until one
+   is active.
 
 The normal **Call Stack** view remains flat across DAP threads. The PyRust
 view is the intentional nested representation.

@@ -7,6 +7,7 @@ import {
   processTreeChildren,
   PyRustProcessTreeProvider,
   rootProcesses,
+  stackFrameNodes,
   type PyRustProcessTree,
 } from "../../processTree";
 
@@ -253,4 +254,29 @@ export function runProcessTreeModelTest(): void {
   const threadItem = provider.getTreeItem(threadNode);
   assert.strictEqual(threadItem.label, "process-A-worker-1 (tid 201)");
   assert.strictEqual(threadItem.description, "stopped");
+
+  const frames = stackFrameNodes(workerA, threadNode.thread, [
+    {
+      id: 301,
+      name: "pyrust_native::rust_inner",
+      line: 6,
+      source: { name: "lib.rs", path: "/workspace/lib.rs" },
+    },
+    {
+      id: 302,
+      name: "python_worker",
+      line: 124,
+      source: {
+        name: "process_thread_worker.py",
+        path: "/workspace/process_thread_worker.py",
+      },
+    },
+  ]);
+  assert.deepStrictEqual(
+    frames.map((node) => node.kind),
+    ["frame", "frame"],
+  );
+  const frameItem = provider.getTreeItem(frames[0]);
+  assert.strictEqual(frameItem.label, "pyrust_native::rust_inner");
+  assert.strictEqual(frameItem.description, "lib.rs:6");
 }

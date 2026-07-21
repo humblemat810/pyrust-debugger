@@ -23,8 +23,7 @@
       "debug": [
         {
           "id": "pyrustProcessTree",
-          "name": "PyRust Process Tree",
-          "when": "debugType == pyrust"
+          "name": "PyRust Process Tree"
         }
       ]
     },
@@ -32,8 +31,24 @@
       {
         "command": "pyrust.focusThread",
         "title": "PyRust: Focus Process-Tree Thread"
+      },
+      {
+        "command": "pyrust.focusFrame",
+        "title": "PyRust: Focus Process-Tree Stack Frame"
       }
     ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "pyrust.focusThread",
+          "when": "false"
+        },
+        {
+          "command": "pyrust.focusFrame",
+          "when": "false"
+        }
+      ]
+    },
     "configuration": {
       "title": "PyRust Debugger",
       "properties": {
