@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   );
   const installedRoot = path.join(
     extensionsDir,
-    "pyrust.pyrust-debugger-0.0.2",
+    "pyrust.pyrust-debugger-0.0.3",
   );
   const vsix = path.join(extensionRoot, "pyrust-debugger.vsix");
 

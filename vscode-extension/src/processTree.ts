@@ -288,11 +288,16 @@ async function openFrame(frame: PyRustStackFrame | undefined): Promise<void> {
   if (!sourcePath || !frame?.line) {
     return;
   }
-  const document = await vscode.workspace.openTextDocument(sourcePath);
+  const document = await vscode.workspace.openTextDocument(sourceUri(sourcePath));
   await vscode.window.showTextDocument(document, {
     selection: new vscode.Range(frame.line - 1, 0, frame.line - 1, 0),
     preserveFocus: false,
   });
+}
+
+export function sourceUri(sourcePath: string): vscode.Uri {
+  const parsed = vscode.Uri.parse(sourcePath);
+  return parsed.scheme ? parsed : vscode.Uri.file(sourcePath);
 }
 
 function isProcessTree(value: unknown): value is PyRustProcessTree {

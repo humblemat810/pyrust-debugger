@@ -7,6 +7,7 @@ import {
   processTreeChildren,
   PyRustProcessTreeProvider,
   rootProcesses,
+  sourceUri,
   stackFrameNodes,
   type PyRustProcessTree,
 } from "../../processTree";
@@ -279,4 +280,14 @@ export function runProcessTreeModelTest(): void {
   const frameItem = provider.getTreeItem(frames[0]);
   assert.strictEqual(frameItem.label, "pyrust_native::rust_inner");
   assert.strictEqual(frameItem.description, "lib.rs:6");
+  assert.strictEqual(
+    sourceUri("/workspaces/pyrust-debugger/lib.rs").scheme,
+    "file",
+  );
+  assert.strictEqual(
+    sourceUri(
+      "vscode-remote://dev-container%2Bexample/workspaces/pyrust-debugger/lib.rs",
+    ).scheme,
+    "vscode-remote",
+  );
 }
