@@ -23,12 +23,11 @@ its external artifact exists.
 
 - [ ] Commit the submission assets and run `./scripts/submission-status.sh`.
 - [ ] Record the printed commit SHA in the recording notes.
-- [ ] Run `./scripts/verify-submission.sh` from a clean Dev Container session.
-- [ ] If Docker capacity permits, run
-  `PYRUST_VERIFY_CONTAINER=1 ./scripts/verify-submission.sh` for a clean
-  container rebuild and acceptance pass.
-  The 2026-07-21 host had about 3.6 GB free, so do not attempt this until more
-  disk space is available.
+- [x] `./scripts/verify-submission.sh` reported `SUBMISSION-DEMO-GATE PASS`
+  from the Dev Container IDE console on 2026-07-21.
+- [x] `PYRUST_VERIFY_CONTAINER=1 ./scripts/verify-submission.sh` completed a
+  clean container rebuild and reported `AC-CV-01` through `AC-CV-10` plus
+  `SUBMISSION-DEMO-GATE PASS` on 2026-07-21.
 - [ ] Confirm `pyrust.pyrust-debugger@0.0.5` is installed in the Dev Container.
 - [ ] Stop any previous debug session and reload the VS Code window.
 - [ ] Open the Run and Debug sidebar and ensure **PyRust Process Tree** is

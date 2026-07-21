@@ -2,10 +2,12 @@
 
 ## Scope
 
-This record captures the successful repository-side run of:
+This record captures two successful submission-gate runs:
 
 ```bash
 PYRUST_VERIFY_CONTAINER=0 ./scripts/verify-submission.sh
+
+PYRUST_VERIFY_CONTAINER=1 ./scripts/verify-submission.sh
 ```
 
 The command completed with:
@@ -31,18 +33,9 @@ SUBMISSION-DEMO-GATE PASS
 | VS Code extension | TypeScript compile and VSIX package passed |
 | Current Dev Container extension check | `scripts/accept-container-inside.sh extension` passed |
 | Container build definition | `docker buildx build --check --file .devcontainer/Dockerfile .` passed |
+| Clean Dev Container rebuild and acceptance | `AC-CV-01` through `AC-CV-10` passed |
 
 ## Not Covered By This Record
-
-- A clean Docker-backed Dev Container rebuild. Run:
-
-  ```bash
-  PYRUST_VERIFY_CONTAINER=1 ./scripts/verify-submission.sh
-  ```
-
-  It was not run in this session because the Docker host had approximately
-  3.6 GB free on its root filesystem, which is insufficient margin for this
-  project's intentional no-cache rebuild.
 
 - Manual VS Code visual confirmation after the current VSIX is installed.
 - The public screen recording, Devpost form completion, and final submission
