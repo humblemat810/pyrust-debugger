@@ -98,6 +98,20 @@ class ProxyHooks:
     ) -> LocalResponse | None:
         return None
 
+    def on_step_request(
+        self,
+        request: Message,
+        context: "ProxyContext",
+    ) -> LocalResponse | None:
+        return None
+
+    def on_pause_request(
+        self,
+        request: Message,
+        context: "ProxyContext",
+    ) -> LocalResponse | None:
+        return None
+
     def on_set_breakpoints(
         self,
         request: Message,
@@ -210,9 +224,13 @@ class DapProxy:
             "configurationDone",
             "continue",
             "evaluate",
+            "next",
+            "pause",
             "scopes",
             "setBreakpoints",
             "stackTrace",
+            "stepIn",
+            "stepOut",
             "threads",
             "variables",
             "pyrust/processTree",
@@ -573,6 +591,10 @@ class DapProxy:
                 response = self._hooks.on_threads(request, self.context)
             elif command == "continue":
                 response = self._hooks.on_continue_request(request, self.context)
+            elif command in {"next", "stepIn", "stepOut"}:
+                response = self._hooks.on_step_request(request, self.context)
+            elif command == "pause":
+                response = self._hooks.on_pause_request(request, self.context)
             elif command == "setBreakpoints":
                 response = self._hooks.on_set_breakpoints(request, self.context)
             elif command == "configurationDone":

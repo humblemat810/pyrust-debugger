@@ -13,6 +13,7 @@
 - [ADR 0007: Process-tree view](decisions/0007-process-tree-view.md)
 - [ADR 0008: Process and thread mode contract](decisions/0008-process-thread-mode-contract.md)
 - [ADR 0009: debugpy for Python-owned stops](decisions/0009-debugpy-python-owned-stops.md)
+- [ADR 0010: Dual-debug-engine coordinator](decisions/0010-dual-debug-engine-coordinator.md)
 - [Feasibility summary](feasibility.md)
 
 ## Research reports
@@ -70,6 +71,11 @@ ADR 0009 adds opt-in debugpy-backed Python breakpoints and full Python
 evaluation for Python-owned stops. CodeLLDB continues to own Rust stops, where
 the ADR 0005 snapshot path remains the safe Python fallback. The debugpy
 transport is PID-scoped for Python threads and spawned child processes.
+
+ADR 0010 defines the dual-debug-engine coordinator. One VS Code-facing DAP
+session routes native frames and commands to CodeLLDB, live Python frames and
+commands to debugpy, and Rust-stop Python frames to the bounded snapshot
+reader.
 
 ADR 0006 implements the first process-tree coordinator. Two-worker
 Python-thread and Rust-thread fixtures pass. Python-parent and Rust-parent

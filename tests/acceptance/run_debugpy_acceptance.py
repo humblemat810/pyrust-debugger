@@ -40,6 +40,7 @@ CRITERIA = (
     "AC-DP-03",
     "AC-DP-04",
     "AC-DP-05",
+    "AC-DP-06",
 )
 
 
@@ -157,6 +158,36 @@ def python_stop_and_native_handoff() -> None:
         native_id = frames[0].get("id")
         if not isinstance(native_id, int) or _evaluate(client, native_id, "value") != "20":
             raise DapError("native handoff did not restore Rust evaluation")
+    finally:
+        client.close()
+
+
+def python_step_in() -> None:
+    client, stopped = _python_outer_stop()
+    try:
+        thread_id = stopped.get("body", {}).get("threadId")
+        if not isinstance(thread_id, int):
+            raise DapError(f"Python step stop has no thread ID: {stopped}")
+        for expected_name, expected_line in (
+            ("python_outer", 11),
+            ("python_inner", 5),
+        ):
+            stepped = client.send(
+                "stepIn",
+                {"threadId": thread_id, "granularity": "line"},
+            )
+            client.response(stepped, timeout=10)
+            stopped = client.event("stopped", timeout=30)
+            thread_id = stopped.get("body", {}).get("threadId")
+            if not isinstance(thread_id, int):
+                raise DapError(f"Python step result has no thread ID: {stopped}")
+            frame = _stack(client, thread_id)[0]
+            if (
+                frame.get("name") != expected_name
+                or frame.get("line") != expected_line
+                or (frame.get("source") or {}).get("path") != str(PYTHON_SOURCE)
+            ):
+                raise DapError(f"debugpy step did not reach Python frame: {frame}")
     finally:
         client.close()
 
@@ -341,6 +372,7 @@ def main() -> int:
         ("AC-DP-03", python_threads),
         ("AC-DP-04", python_processes),
         ("AC-DP-05", rust_outer_python_stop),
+        ("AC-DP-06", python_step_in),
     )
     results: dict[str, bool] = {}
     for criterion, case in cases:

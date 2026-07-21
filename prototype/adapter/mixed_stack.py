@@ -292,6 +292,42 @@ class MixedStackHooks(ProxyHooks):
         )
         return LocalResponse(body=dict(response.get("body") or {}))
 
+    def on_step_request(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        thread_id = (request.get("arguments") or {}).get("threadId")
+        python_manager = self._python_manager
+        if python_manager is None or not python_manager.owns_thread(thread_id):
+            return None
+        assert isinstance(thread_id, int)
+        try:
+            response = python_manager.step_thread(
+                str(request["command"]),
+                thread_id,
+                request.get("arguments") or {},
+            )
+        except PythonTransportError as error:
+            return LocalResponse(success=False, message=str(error))
+        return LocalResponse(body=dict(response.get("body") or {}))
+
+    def on_pause_request(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        thread_id = (request.get("arguments") or {}).get("threadId")
+        python_manager = self._python_manager
+        if python_manager is None or not python_manager.owns_thread(thread_id):
+            return None
+        assert isinstance(thread_id, int)
+        try:
+            response = python_manager.pause_thread(thread_id)
+        except PythonTransportError as error:
+            return LocalResponse(success=False, message=str(error))
+        return LocalResponse(body=dict(response.get("body") or {}))
+
     def on_set_breakpoints(
         self,
         request: Message,

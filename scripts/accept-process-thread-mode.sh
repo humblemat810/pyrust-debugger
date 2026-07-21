@@ -21,7 +21,9 @@ if ! timeout --foreground 120s "$MATURIN" develop \
 fi
 
 echo "process/thread acceptance: building Rust process/thread parent"
-if ! timeout --foreground 180s cargo build --locked \
+if ! timeout --foreground 180s env \
+    PYO3_PYTHON="$PYTHON" \
+    cargo build --locked \
     --manifest-path "$ROOT/research/fixtures/rust_outer/Cargo.toml" \
     --bin rust-outer-python-process-threads; then
     echo "process/thread acceptance: Rust fixture build failed" >&2

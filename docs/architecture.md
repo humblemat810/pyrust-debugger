@@ -101,7 +101,7 @@ cache invalidation complexity.
 - `launch` / `attach`
 - native `setBreakpoints`
 - `configurationDone`
-- `continue`, `next`, `stepIn`, `stepOut`, `pause`
+- native `continue`, `next`, `stepIn`, `stepOut`, `pause`
 - `modules`, `disassemble`, memory requests
 - output, module, thread, exited, and terminated events
 
@@ -115,6 +115,20 @@ cache invalidation complexity.
 - `scopes`: recognize synthetic frame IDs
 - `evaluate`: route Python-owned frame IDs to debugpy; evaluate native-stop
   synthetic Python frames only through the bounded snapshot evaluator
+- `continue`, `next`, `stepIn`, `stepOut`, `pause`: route virtual Python
+  threads to debugpy and native threads to CodeLLDB
+
+The coordinator's frame routing table is explicit:
+
+| Exposed frame | Owner | Supported operations |
+| --- | --- | --- |
+| Native CodeLLDB ID | CodeLLDB | Rust variables, expressions, source/disassembly, native stepping |
+| Virtual debugpy ID | debugpy | Python variables, imports, calls, expressions, Python stepping |
+| Stop-scoped synthetic ID | PyRust snapshot | Source navigation, bounded locals, safe snapshot expressions |
+
+The built-in VS Code Call Stack is authoritative for frame selection. A custom
+Process Tree can navigate source and display ownership, but it cannot set
+VS Code's active DAP stack frame through a public API.
 
 Because CodeLLDB omitted `process` in the research launches, the final routing
 table must also include the selected structured PID-discovery mechanism.

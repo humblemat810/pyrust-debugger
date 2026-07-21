@@ -109,8 +109,6 @@ class PythonProcessManager:
             ],
             "sourceModified": bool(arguments.get("sourceModified", False)),
         }
-        if not record["breakpoints"]:
-            return
         with self._lock:
             self._breakpoints = [
                 existing
@@ -118,6 +116,21 @@ class PythonProcessManager:
                 if existing["source"]["path"] != record["source"]["path"]
             ]
             self._breakpoints.append(record)
+            sessions = tuple(self._sessions.values())
+        for session in sessions:
+            try:
+                session.transport.request("setBreakpoints", record)
+            except PythonTransportError as error:
+                self._emit_event(
+                    "output",
+                    {
+                        "category": "stderr",
+                        "output": (
+                            "PyRust could not update debugpy breakpoints for "
+                            f"process {session.process_id}: {error}\n"
+                        ),
+                    },
+                )
 
     def mark_configuration_done(self) -> None:
         with self._lock:
@@ -310,17 +323,48 @@ class PythonProcessManager:
         }
 
     def continue_thread(self, thread_id: int, *, single_thread: bool = False) -> Message:
-        route = self._require_thread(thread_id)
-        self._require_session(route.process_id).transport.notify(
+        return self._resume_thread(
             "continue",
-            {
-                "threadId": route.thread_id,
-                "singleThread": single_thread,
-            },
+            thread_id,
+            {"singleThread": single_thread},
         )
+
+    def step_thread(
+        self,
+        command: str,
+        thread_id: int,
+        arguments: Mapping[str, Any],
+    ) -> Message:
+        if command not in {"next", "stepIn", "stepOut"}:
+            raise PythonTransportError(f"unsupported debugpy step command {command!r}")
+        forwarded = {
+            key: value
+            for key, value in arguments.items()
+            if key in {"granularity", "singleThread", "targetId"}
+        }
+        return self._resume_thread(command, thread_id, forwarded)
+
+    def pause_thread(self, thread_id: int) -> Message:
+        route = self._require_thread(thread_id)
+        response = self._require_session(route.process_id).transport.request(
+            "pause",
+            {"threadId": route.thread_id},
+        )
+        return {"success": True, "body": dict(response.get("body") or {})}
+
+    def _resume_thread(
+        self,
+        command: str,
+        thread_id: int,
+        arguments: Mapping[str, Any],
+    ) -> Message:
+        route = self._require_thread(thread_id)
+        forwarded = dict(arguments)
+        forwarded["threadId"] = route.thread_id
+        self._require_session(route.process_id).transport.notify(command, forwarded)
         body = {
             "threadId": thread_id,
-            "allThreadsContinued": not single_thread,
+            "allThreadsContinued": not bool(forwarded.get("singleThread")),
         }
         # A Rust breakpoint may stop the target before debugpy answers this
         # request. The write itself is enough to release Python ownership.

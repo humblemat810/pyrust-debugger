@@ -222,8 +222,8 @@ At each required stop:
    the snapshot evaluator rejects it without ending the session.
 8. While moving between Rust and Python frames in the built-in **Call Stack**,
    confirm the Debug Console input language changes between Rust and Python.
-   Clicking a same-thread frame in **PyRust Process Tree** must also select the
-   corresponding built-in frame before evaluation.
+   **PyRust Process Tree** may navigate to a frame's source, but select the
+   corresponding built-in Call Stack frame before evaluating an expression.
 
 PyRust starts CodeLLDB in evaluation mode, so Rust expressions are entered
 directly in the Debug Console. A fresh session must report `Console is in
@@ -306,6 +306,32 @@ Observed value: (3, 14)
 Evidence: debugpy-owned Python stop, followed by a CodeLLDB rust_inner stop.
 Notes: Full Python evaluation worked at Python stops; Python frames shown at
 Rust stops still used the bounded snapshot evaluator.
+```
+
+## HC-CV-06: Python Engine Routing
+
+1. Select `PyRust: Python Outer (debugpy)`.
+2. Set a Python breakpoint at `research/fixtures/python_outer/app.py:10` and
+   retain the Rust breakpoint at `research/fixtures/python_outer/src/lib.rs:6`.
+3. Start debugging. At the first `python_outer` stop, confirm the built-in
+   Call Stack top frame is Python.
+4. Run `import sys` in the Debug Console. It must succeed at this Python-owned
+   stop.
+5. Use **Step Into** twice. The built-in Call Stack must stop first at
+   `python_outer` line 11, then at `python_inner` line 5.
+6. Continue to `rust_inner`. Confirm the mixed stack begins with
+   `rust_inner`, `rust_outer`, `python_inner`, `python_outer`.
+7. Select `python_inner` in the built-in Call Stack and evaluate `value + 1`.
+   It must return `21` from the snapshot evaluator.
+8. Select `rust_inner` and evaluate `value * 2`. It must return `40` through
+   CodeLLDB.
+
+Record:
+
+```text
+HC-CV-06 PASS
+Evidence: Python stepIn stops remained Python/debugpy-owned; the subsequent
+Rust stop restored the mixed stack and routed expressions by selected frame.
 ```
 
 ## Completion

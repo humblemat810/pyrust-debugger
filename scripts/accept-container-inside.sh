@@ -71,9 +71,16 @@ const container = JSON.parse(
 );
 if (
   container.postAttachCommand !==
-  "bash .devcontainer/install-vscode-extension.sh"
+  "bash .devcontainer/refresh-pyrust.sh"
 ) {
-  throw new Error("postAttachCommand does not install the PyRust extension");
+  throw new Error("postAttachCommand does not refresh the PyRust extension");
+}
+const refresh = fs.readFileSync(".devcontainer/refresh-pyrust.sh", "utf8");
+if (
+  !refresh.includes("npm run --prefix \"$ROOT/vscode-extension\" package") ||
+  !refresh.includes("bash \"$ROOT/.devcontainer/install-vscode-extension.sh\"")
+) {
+  throw new Error("PyRust refresh command does not package and install the VSIX");
 }
 const tasks = JSON.parse(fs.readFileSync(".vscode/tasks.json", "utf8"));
 for (const label of [
@@ -99,6 +106,8 @@ expected = [
     os.environ["PYRUST_CODELLDB"],
     "--liblldb",
     os.environ["PYRUST_LIBLLDB"],
+    "--settings",
+    '{"consoleMode":"evaluate"}',
 ]
 actual = _default_codelldb_command()
 if actual != expected:

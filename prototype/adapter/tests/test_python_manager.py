@@ -98,6 +98,13 @@ class FakeDebugpyTransport:
                     "variablesReference": 0,
                 },
             }
+        if command == "setBreakpoints":
+            return {
+                "success": True,
+                "body": {"breakpoints": [{"verified": True}]},
+            }
+        if command == "pause":
+            return {"success": True, "body": {}}
         raise AssertionError(f"unexpected fake request {command!r}")
 
     def notify(
@@ -207,19 +214,40 @@ class PythonProcessManagerTests(unittest.TestCase):
                 "(3, 14)",
             )
 
-            manager.continue_thread(virtual_thread_id)
-            self.assertIsNone(state.coordinator.execution_owner(700))
-            self.assertIsNone(manager.native_frame_route(frame_id))
+            manager.pause_thread(virtual_thread_id)
             self.assertEqual(
-                manager.recent_frames(700)[0]["name"],
-                "python_worker",
+                created[0].calls[-1],
+                ("pause", {"threadId": 701}),
             )
+            manager.step_thread(
+                "stepIn",
+                virtual_thread_id,
+                {"granularity": "line", "singleThread": True},
+            )
+            self.assertEqual(
+                created[0].calls[-1],
+                (
+                    "stepIn",
+                    {
+                        "granularity": "line",
+                        "singleThread": True,
+                        "threadId": 701,
+                    },
+                ),
+            )
+            manager.continue_thread(virtual_thread_id)
             self.assertEqual(
                 created[0].calls[-1],
                 (
                     "continue",
                     {"threadId": 701, "singleThread": False},
                 ),
+            )
+            self.assertIsNone(state.coordinator.execution_owner(700))
+            self.assertIsNone(manager.native_frame_route(frame_id))
+            self.assertEqual(
+                manager.recent_frames(700)[0]["name"],
+                "python_worker",
             )
             self.assertIn(
                 (
@@ -233,6 +261,52 @@ class PythonProcessManagerTests(unittest.TestCase):
             )
             manager.close()
             self.assertTrue(created[0].closed)
+
+    def test_breakpoints_update_an_attached_debugpy_process(self) -> None:
+        state = ProxySessionState()
+        created: list[FakeDebugpyTransport] = []
+        with TemporaryDirectory() as directory:
+            registry = Path(directory)
+
+            def factory(
+                event_handler: Callable[[Message], None],
+            ) -> FakeDebugpyTransport:
+                transport = FakeDebugpyTransport(event_handler)
+                created.append(transport)
+                return transport
+
+            manager = PythonProcessManager(
+                registry_path=registry,
+                state=state,
+                emit_event=lambda _event, _body: None,
+                transport_factory=factory,
+            )
+            manager._start_process(
+                {
+                    "pid": 700,
+                    "parentPid": 600,
+                    "host": "127.0.0.1",
+                    "port": 5678,
+                }
+            )
+            manager.add_breakpoints(
+                {
+                    "source": {"path": "/workspace/worker.py"},
+                    "breakpoints": [{"line": 24}],
+                }
+            )
+            self.assertIn(
+                (
+                    "setBreakpoints",
+                    {
+                        "source": {"path": "/workspace/worker.py"},
+                        "breakpoints": [{"line": 24}],
+                        "sourceModified": False,
+                    },
+                ),
+                created[0].calls,
+            )
+            manager.close()
 
     def test_attach_failure_is_marked_and_not_retried(self) -> None:
         state = ProxySessionState()
