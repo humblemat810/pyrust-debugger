@@ -74,6 +74,41 @@ class SyntheticFrameRegistryTests(unittest.TestCase):
 
 
 class ProxySessionStateTests(unittest.TestCase):
+    def test_python_threads_use_virtual_ids_and_python_stop_ownership(self) -> None:
+        state = ProxySessionState()
+        state.register_process(100, engine="python")
+        state.bind_python_thread(100, 1_600_000_000, name="Python worker")
+
+        state.on_stopped(
+            {
+                "body": {
+                    "threadId": 1_600_000_000,
+                    "systemProcessId": 100,
+                    "allThreadsStopped": True,
+                }
+            },
+            owner="python",
+        )
+
+        self.assertEqual(state.coordinator.execution_owner(100), "python")
+        tree = state.process_tree()
+        self.assertEqual(tree[0]["threads"][0]["name"], "Python worker")
+        self.assertTrue(tree[0]["threads"][0]["isStopped"])
+
+        state.on_continued(
+            {
+                "body": {
+                    "threadId": 1_600_000_000,
+                    "systemProcessId": 100,
+                    "allThreadsContinued": True,
+                }
+            },
+            owner="python",
+        )
+
+        self.assertIsNone(state.coordinator.execution_owner(100))
+        self.assertFalse(state.process_tree()[0]["isStopped"])
+
     def test_proxy_accepts_a_shared_session_state(self) -> None:
         state = ProxySessionState()
         proxy = DapProxy(

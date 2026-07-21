@@ -172,6 +172,9 @@ def assert_source(frame: dict[str, Any], path: Path, line: int) -> None:
 
 def callback_stop() -> tuple[DapClient, dict[str, Any]]:
     client, stopped = start_fixture()
+    if "console is in 'evaluation' mode" not in output_text(client).lower():
+        client.close()
+        raise DapError("CodeLLDB did not start in evaluation mode")
     thread_id = stopped.get("body", {}).get("threadId")
     if not isinstance(thread_id, int) or thread_id <= 0:
         client.close()
@@ -221,7 +224,7 @@ def rp_source_navigation() -> None:
         frames = result["frames"]
         assert_source(frame_by_name(frames, "rust_callback"), RUST_SOURCE, 9)
         assert_source(frame_by_name(frames, "rust_outer"), RUST_SOURCE, 15)
-        assert_source(frame_by_name(frames, "main"), RUST_SOURCE, 29)
+        assert_source(frame_by_name(frames, "main"), RUST_SOURCE, 34)
         assert_source(frame_by_name(frames, "python_inner"), PYTHON_SOURCE, 4)
         assert_source(frame_by_name(frames, "python_outer"), PYTHON_SOURCE, 9)
     finally:

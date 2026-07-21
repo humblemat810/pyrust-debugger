@@ -7,8 +7,13 @@ It is intended for the Linux x86_64 Dev Container defined by ADR 0004.
 The launch configuration can be adapted to another PyO3 application, but the
 current VSIX does not bundle the Python DAP adapter; external workspaces must
 point `pyrust.adapterPath` and `pyrust.pythonPath` at a PyRust debugger
-checkout. Python breakpoints, Python evaluation, and Marketplace packaging are
-not supported.
+checkout. Marketplace packaging is not supported.
+
+Set `pyrustPythonDebug: true` in a launch configuration to enable debugpy for
+Python-owned source-breakpoint stops. That mode supports normal Python
+variables and expression evaluation, including imports and calls. Rust stops
+remain CodeLLDB-owned and show the existing merged stack with bounded Python
+snapshot evaluation.
 
 ## Process Tree
 

@@ -218,26 +218,26 @@ At each required stop:
 4. Select each Python frame and confirm the `Python Locals` scope appears.
 5. Expand `Python Locals` for `python_inner` and confirm `value = 20`.
 6. With `python_inner` selected, evaluate `value + 1` and confirm it is `21`.
-7. Attempt `__import__('os')` and confirm the adapter rejects it without
-   ending the session.
+7. In this native-stop configuration, attempt `__import__('os')` and confirm
+   the snapshot evaluator rejects it without ending the session.
 8. While moving between Rust and Python frames in the built-in **Call Stack**,
    confirm the Debug Console input language changes between Rust and Python.
    Clicking a same-thread frame in **PyRust Process Tree** must also select the
    corresponding built-in frame before evaluation.
 
-The shipped launch configurations use CodeLLDB `consoleMode: "evaluate"`, so
-Rust expressions are entered directly in the Debug Console. If an existing
-session still reports command mode, prefix the expression with `?`, for
-example `? value`.
+PyRust starts CodeLLDB in evaluation mode, so Rust expressions are entered
+directly in the Debug Console. A fresh session must report `Console is in
+'evaluation' mode`; if it instead reports command mode, stop that debug
+session and start it again so it uses the current adapter.
 
 Record:
 
 ```text
 HC-CV-03 PASS
-Rust expression: ? value
+Rust expression: value
 Observed value: 20
 Evidence: Human Debug Console and Variables inspection at rust_inner.
-Notes: Rust local scope showed value = 20; CodeLLDB evaluated ? 1 + 1 as 2
+Notes: Rust local scope showed value = 20; CodeLLDB evaluated 1 + 1 as 2
 in both fixture directions; Python Locals showed value = 20; snapshot
 evaluation of value + 1 returned 21; __import__('os') was rejected without
 ending the session.
@@ -258,6 +258,52 @@ Evidence: Human continued the Rust-outer session from its first callback stop.
 Notes: The second rust_callback stop recollected the mixed stack and replaced
 the first stop's synthetic Python frames; only current Python frames remained
 selectable.
+```
+
+## HC-CV-05: Full Python Breakpoint
+
+1. Select `PyRust: Python Outer (debugpy)`.
+2. Open `research/fixtures/python_outer/app.py` and set a breakpoint at line
+   10, before `python_inner(value)` is called.
+3. Also set the existing Rust breakpoint at
+   `research/fixtures/python_outer/src/lib.rs:6`.
+4. Start debugging. The first stop must be `python_outer` in `app.py`.
+5. With that Python frame selected, enter each expression directly in the
+   Debug Console:
+
+   ```text
+   import sys
+   sys.version_info[:2]
+   type(2).__name__
+   __import__('sys').version_info[:2]
+   ```
+
+   `import sys` completes without an error; the remaining expressions return
+   `(3, 14)`, `'int'`, and `(3, 14)`.
+6. Continue. The next stop must be `rust_inner` and show the ordinary merged
+   Rust/Python stack.
+7. Select `PyRust: Rust Outer (debugpy)`, set a Python breakpoint at
+   `research/fixtures/rust_outer/src/embedded.py:4`, and retain the Rust
+   breakpoint at `research/fixtures/rust_outer/src/main.rs:8`. Confirm the
+   first stop is `python_inner`, `import sys` works, and continue reaches
+   `rust_callback`.
+8. Select `PyRust: Python Threads (debugpy)` and set a breakpoint at
+   `tests/acceptance/threaded_fixture_driver.py:24`. Confirm the Debug Console
+   can evaluate `worker_label + ':' + str(worker_value)` in either worker.
+9. Select `PyRust: Python Processes (debugpy)` and set a breakpoint at
+   `tests/acceptance/multiprocess_worker.py:50`. Confirm a child process stops
+   and `(__import__('os').getpid(), label, value)` reports that child PID and
+   its own values.
+
+Record:
+
+```text
+HC-CV-05 PASS
+Python expression: __import__('sys').version_info[:2]
+Observed value: (3, 14)
+Evidence: debugpy-owned Python stop, followed by a CodeLLDB rust_inner stop.
+Notes: Full Python evaluation worked at Python stops; Python frames shown at
+Rust stops still used the bounded snapshot evaluator.
 ```
 
 ## Completion

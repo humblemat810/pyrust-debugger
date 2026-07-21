@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 import os
 from pathlib import Path
 from queue import Empty, Queue
 import shlex
 import subprocess
+from tempfile import TemporaryDirectory
 from threading import Lock, Thread
 from typing import Any, Mapping
 
 from .child_transport import ChildTransportError
+from .python_manager import PythonProcessManager
+from .python_transport import PythonTransportError
 from .process_manager import ProcessManager
 from prototype.python.pyrust_stack import (
     LocalReadError,
@@ -61,6 +65,8 @@ class MixedStackHooks(ProxyHooks):
         self._in_process_circuit_open = False
         self._in_process_timeout_diagnosed = False
         self._process_manager: ProcessManager | None = None
+        self._python_manager: PythonProcessManager | None = None
+        self._python_debug_registry: TemporaryDirectory[str] | None = None
         self._child_only_process: subprocess.Popen[bytes] | None = None
         self._child_only_mode = False
 
@@ -76,6 +82,8 @@ class MixedStackHooks(ProxyHooks):
         child_registry = arguments.pop("pyrustChildRegistryPath", None)
         process_mode = arguments.pop("pyrustProcessMode", "native")
         thread_mode = arguments.pop("pyrustThreadMode", "all")
+        python_debug = arguments.pop("pyrustPythonDebug", False)
+        python_debug_registry = arguments.pop("pyrustPythonDebugRegistry", None)
 
         if helper_command is not None and not isinstance(helper_command, str):
             raise ValueError("pyrustHelperCommand must be a string")
@@ -97,6 +105,14 @@ class MixedStackHooks(ProxyHooks):
             )
         if thread_mode not in {"all", "single"}:
             raise ValueError("pyrustThreadMode must be 'all' or 'single'")
+        if not isinstance(python_debug, bool):
+            raise ValueError("pyrustPythonDebug must be a boolean")
+        if python_debug_registry is not None and (
+            not isinstance(python_debug_registry, str) or not python_debug_registry
+        ):
+            raise ValueError(
+                "pyrustPythonDebugRegistry must be a non-empty string"
+            )
         if process_mode == "children":
             _prepare_child_registry(Path(child_registry))
         program = arguments.get("program")
@@ -117,7 +133,28 @@ class MixedStackHooks(ProxyHooks):
             if self._process_manager is not None:
                 self._process_manager.close()
                 self._process_manager = None
+            if self._python_manager is not None:
+                self._python_manager.close()
+                self._python_manager = None
+            if self._python_debug_registry is not None:
+                self._python_debug_registry.cleanup()
+                self._python_debug_registry = None
             self._terminate_child_only_process()
+            if python_debug:
+                registry_path = self._configure_python_debug(
+                    arguments,
+                    child_registry=child_registry,
+                    configured_registry=python_debug_registry,
+                )
+                self._python_manager = PythonProcessManager(
+                    registry_path=registry_path,
+                    state=context.state,
+                    emit_event=lambda event, body: self._emit_python_event(
+                        context,
+                        event,
+                        body,
+                    ),
+                )
             if self._child_only_mode:
                 self._child_only_process = self._start_child_only_parent(
                     arguments,
@@ -180,6 +217,9 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         del request, context
+        python_manager = self._python_manager
+        if python_manager is not None and python_manager.has_python_stop():
+            return LocalResponse(body={"threads": python_manager.threads()})
         if self._process_manager is None:
             return None
         return LocalResponse(body={"threads": self._process_manager.threads()})
@@ -190,6 +230,19 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         thread_id = (request.get("arguments") or {}).get("threadId")
+        python_manager = self._python_manager
+        if python_manager is not None and python_manager.owns_thread(thread_id):
+            assert isinstance(thread_id, int)
+            try:
+                response = python_manager.continue_thread(
+                    thread_id,
+                    single_thread=bool(
+                        (request.get("arguments") or {}).get("singleThread")
+                    ),
+                )
+            except PythonTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
         manager = self._process_manager
         if manager is not None and manager.owns_thread(thread_id):
             assert isinstance(thread_id, int)
@@ -237,6 +290,28 @@ class MixedStackHooks(ProxyHooks):
         request: Message,
         context: ProxyContext,
     ) -> LocalResponse | None:
+        source = (request.get("arguments") or {}).get("source")
+        source_path = source.get("path") if isinstance(source, dict) else None
+        python_manager = self._python_manager
+        if (
+            python_manager is not None
+            and isinstance(source_path, str)
+            and source_path.lower().endswith((".py", ".pyw"))
+        ):
+            python_manager.add_breakpoints(request.get("arguments") or {})
+            breakpoints = (request.get("arguments") or {}).get("breakpoints")
+            count = len(breakpoints) if isinstance(breakpoints, list) else 0
+            return LocalResponse(
+                body={
+                    "breakpoints": [
+                        {
+                            "verified": True,
+                            "message": "Queued for registered debugpy processes",
+                        }
+                        for _ in range(count)
+                    ]
+                }
+            )
         del context
         if self._process_manager is not None:
             self._process_manager.add_breakpoints(request.get("arguments") or {})
@@ -265,6 +340,8 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         del request, context
+        if self._python_manager is not None:
+            self._python_manager.mark_configuration_done()
         if self._process_manager is not None:
             self._process_manager.mark_configuration_done()
         if self._child_only_mode:
@@ -277,6 +354,9 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse:
         del request
+        python_manager = self._python_manager
+        if python_manager is not None and python_manager.has_python_stop():
+            python_manager.refresh_threads()
         manager = self._process_manager
         if manager is not None:
             manager.refresh_threads()
@@ -300,6 +380,17 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         frame_id = (request.get("arguments") or {}).get("frameId")
+        python_manager = self._python_manager
+        if (
+            python_manager is not None
+            and python_manager.native_frame_route(frame_id) is not None
+        ):
+            assert isinstance(frame_id, int)
+            try:
+                response = python_manager.scopes(frame_id)
+            except PythonTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
         manager = self._process_manager
         if manager is not None and manager.native_frame_route(frame_id) is not None:
             assert isinstance(frame_id, int)
@@ -348,6 +439,16 @@ class MixedStackHooks(ProxyHooks):
         reference = (request.get("arguments") or {}).get("variablesReference")
         if not isinstance(reference, int):
             return None
+        python_manager = self._python_manager
+        if (
+            python_manager is not None
+            and python_manager.variable_route(reference) is not None
+        ):
+            try:
+                response = python_manager.variables(reference)
+            except PythonTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
         manager = self._process_manager
         if manager is not None and manager.variable_route(reference) is not None:
             try:
@@ -388,6 +489,20 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         frame_id = (request.get("arguments") or {}).get("frameId")
+        python_manager = self._python_manager
+        if (
+            python_manager is not None
+            and python_manager.native_frame_route(frame_id) is not None
+        ):
+            assert isinstance(frame_id, int)
+            try:
+                response = python_manager.evaluate(
+                    frame_id,
+                    request.get("arguments") or {},
+                )
+            except PythonTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
         manager = self._process_manager
         if manager is not None and manager.native_frame_route(frame_id) is not None:
             assert isinstance(frame_id, int)
@@ -446,6 +561,13 @@ class MixedStackHooks(ProxyHooks):
             )
 
         manager = self._process_manager
+        python_manager = self._python_manager
+        if python_manager is not None and python_manager.owns_thread(thread_id):
+            try:
+                response = python_manager.stack_trace(thread_id, arguments)
+            except PythonTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
         child_process = (
             context.state.process_id_for_thread(thread_id)
             if manager is not None and manager.owns_thread(thread_id)
@@ -939,13 +1061,71 @@ class MixedStackHooks(ProxyHooks):
         with self._lock:
             manager = self._process_manager
             self._process_manager = None
+            python_manager = self._python_manager
+            self._python_manager = None
+            python_debug_registry = self._python_debug_registry
+            self._python_debug_registry = None
             child_only_process = self._child_only_process
             self._child_only_process = None
             self._child_only_mode = False
         if manager is not None:
             manager.close()
+        if python_manager is not None:
+            python_manager.close()
+        if python_debug_registry is not None:
+            python_debug_registry.cleanup()
         if child_only_process is not None:
             _terminate_process(child_only_process)
+
+    def _configure_python_debug(
+        self,
+        arguments: dict[str, Any],
+        *,
+        child_registry: str | None,
+        configured_registry: str | None,
+    ) -> Path:
+        if configured_registry is not None:
+            registry = Path(configured_registry)
+        elif child_registry is not None:
+            registry = Path(child_registry) / "debugpy"
+        else:
+            self._python_debug_registry = TemporaryDirectory(
+                prefix="pyrust-debugpy-",
+            )
+            registry = Path(self._python_debug_registry.name)
+        registry.mkdir(parents=True, exist_ok=True)
+
+        launch_env = arguments.get("env", {})
+        if not isinstance(launch_env, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in launch_env.items()
+        ):
+            raise ValueError("launch env must be string pairs")
+        python_bootstrap = str(Path(__file__).resolve().parents[1] / "python")
+        debugpy_module = importlib.import_module("debugpy")
+        if not debugpy_module.__file__:
+            raise ValueError("installed debugpy package has no import path")
+        debugpy_site_packages = str(Path(debugpy_module.__file__).resolve().parents[1])
+        inherited_python_path = launch_env.get("PYTHONPATH", os.environ.get("PYTHONPATH"))
+        launch_env = dict(launch_env)
+        launch_env.update(
+            {
+                "PYRUST_DEBUGPY_ENABLE": "1",
+                "PYRUST_DEBUGPY_REGISTRY": str(registry),
+                "PYRUST_DEBUGPY_WAIT_FOR_CLIENT": "1",
+                "PYDEVD_DISABLE_FILE_VALIDATION": "1",
+                "PYTHONPATH": (
+                    f"{python_bootstrap}{os.pathsep}{debugpy_site_packages}"
+                    if not inherited_python_path
+                    else (
+                        f"{python_bootstrap}{os.pathsep}{debugpy_site_packages}"
+                        f"{os.pathsep}{inherited_python_path}"
+                    )
+                ),
+            }
+        )
+        arguments["env"] = launch_env
+        return registry
 
     def _start_child_only_parent(
         self,
@@ -1020,6 +1200,14 @@ class MixedStackHooks(ProxyHooks):
             self.on_stopped(message, context)
         elif event == "continued":
             self.on_continued(message, context)
+        context.send_event(event, body)
+
+    @staticmethod
+    def _emit_python_event(
+        context: ProxyContext,
+        event: str,
+        body: Mapping[str, Any],
+    ) -> None:
         context.send_event(event, body)
 
     @staticmethod

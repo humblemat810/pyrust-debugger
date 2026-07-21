@@ -38,15 +38,18 @@ Then choose **PyRust: Python and Rust Threads**, set a breakpoint at
 flowchart LR
     vscode[VS Code Debug UI] -->|DAP| proxy[PyRust DAP Proxy]
     proxy -->|DAP| lldb[CodeLLDB]
+    proxy -->|DAP at Python stops| debugpy[debugpy]
     proxy -->|read-only stack recovery| cpython[CPython 3.14]
     lldb --> target[PyO3 debuggee]
     cpython --> target
     proxy --> tree[PyRust Process Tree]
 ```
 
-CodeLLDB remains the execution owner: it launches, stops, and evaluates native
-Rust frames. PyRust augments that native debugger session with read-only Python
-frame recovery and a separate, honest process/thread view.
+CodeLLDB owns Rust stops, native frames, and Rust evaluation. With
+`pyrustPythonDebug: true`, debugpy owns Python source-breakpoint stops and
+provides normal Python variables and evaluation. PyRust coordinates those
+owners per process and keeps the read-only CPython snapshot path for Python
+frames observed at a Rust stop.
 
 ## Why PyRust
 
@@ -56,9 +59,9 @@ frame recovery and a separate, honest process/thread view.
   threads and async tasks are not rendered as fake nested call stacks.
 - **Native debugger preserved:** Rust expressions, scopes, source breakpoints,
   and stepping behavior stay under CodeLLDB ownership.
-- **Bounded Python inspection:** supported Python locals and expressions are
-  evaluated from a captured read-only snapshot, never by executing code in the
-  stopped target.
+- **Full Python stops, safe native stops:** opt-in debugpy supports normal
+  Python breakpoints and evaluation; Python frames reached from a Rust stop use
+  a bounded read-only snapshot instead.
 
 ## Initial direction
 
@@ -80,8 +83,8 @@ Rust application -> embedded Python -> Rust callback
 
 uses the same stack-merging mechanism. ADR 0003 bounds permanently hung
 in-process unwinds with a session circuit breaker and proves this reverse stack
-at an explicit Rust callback breakpoint. It does not add Python breakpoints or
-arbitrary Python evaluation.
+at an explicit Rust callback breakpoint. ADR 0009 adds opt-in debugpy Python
+breakpoints and full Python evaluation for this direction.
 
 ## MVP boundary
 
@@ -92,11 +95,25 @@ The first milestone remains native-debugger-first:
 - show active Python frames and native Rust frames in one VS Code call stack;
 - support CPython 3.14 on Linux first.
 
-Python breakpoints and cross-language stepping are later milestones. ADR 0005
-adds bounded read-only primitive locals and a safe snapshot expression subset
-for supported Python frames; it does not execute code in the debuggee. See
-[the feasibility study](docs/feasibility.md) and
+Python breakpoints are available in opt-in debugpy launch configurations.
+Cross-language stepping remains a later milestone. ADR 0005 provides bounded
+read-only snapshots for Python frames at native stops, while ADR 0009 adds
+full debugpy evaluation at Python-owned stops. See
 [the documentation index](docs/README.md).
+
+## Full Python Debugging
+
+Run the hybrid acceptance suite:
+
+```bash
+./scripts/accept-debugpy-slice.sh
+```
+
+Then select **PyRust: Python Outer (debugpy)**, set a breakpoint at
+`research/fixtures/python_outer/app.py:10`, and start debugging. At that
+Python stop, expressions such as `type(2).__name__` and
+`__import__('sys').version_info[:2]` work normally. Continue to the Rust
+breakpoint to return to the merged Python/Rust stack.
 
 The two executable research fixtures and observed CodeLLDB results are
 documented in [the fixture report](docs/research/fixture-results.md).

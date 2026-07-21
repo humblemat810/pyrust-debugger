@@ -98,6 +98,15 @@ def output_text(client: DapClient) -> str:
     )
 
 
+def assert_evaluate_console_mode(client: DapClient) -> None:
+    output = output_text(client).lower()
+    if "console is in 'evaluation' mode" not in output:
+        raise DapError(
+            "CodeLLDB did not start in evaluate mode: "
+            + (output[-500:] or "no console banner")
+        )
+
+
 def assert_source_frames(frames: list[dict[str, Any]]) -> None:
     expected = {
         "rust_inner": (RUST_SOURCE, 6, "research/fixtures/python_outer/src/lib.rs"),
@@ -122,6 +131,7 @@ def assert_source_frames(frames: list[dict[str, Any]]) -> None:
 def happy_path() -> dict[str, Any]:
     client, stopped = start_fixture()
     try:
+        assert_evaluate_console_mode(client)
         thread_id = stopped["body"]["threadId"]
         first_response = stack(client, thread_id)
         first_frames = user_frames(first_response)

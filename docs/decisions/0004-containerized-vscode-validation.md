@@ -151,7 +151,8 @@ It will:
 - provide initial launch configurations for both fixed fixtures;
 - preserve the proxy as the only DAP endpoint seen by VS Code.
 
-The extension will not start or coordinate debugpy.
+This original container slice did not start or coordinate debugpy. ADR 0009
+adds opt-in debugpy coordination for Python-owned stops.
 
 Add two workspace launch configurations:
 

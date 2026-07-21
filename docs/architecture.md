@@ -32,6 +32,11 @@ extension.
    CPython process + Rust extension
 ```
 
+With `pyrustPythonDebug: true`, the proxy also connects directly to one
+debugpy endpoint per registered Python process. debugpy owns Python
+source-breakpoint stops; CodeLLDB owns Rust stops. The proxy must not query
+debugpy while CodeLLDB has externally stopped the target.
+
 ## Validated alternative
 
 CodeLLDB's bundled LLDB 22.1.4 supports `ScriptedFrameProvider`. A research
@@ -99,7 +104,8 @@ cache invalidation complexity.
 - `threads`: enrich thread-to-OS-ID mapping if needed
 - `stackTrace`: collect, merge, page, and cache
 - `scopes`: recognize synthetic frame IDs
-- `evaluate`: reject or clearly report unsupported Python-frame evaluation
+- `evaluate`: route Python-owned frame IDs to debugpy; evaluate native-stop
+  synthetic Python frames only through the bounded snapshot evaluator
 
 Because CodeLLDB omitted `process` in the research launches, the final routing
 table must also include the selected structured PID-discovery mechanism.
@@ -257,4 +263,5 @@ Initial settings:
 4. Rust-outer/Python-inner fixture.
 5. Python frame locals through bounded remote primitive reading. Implemented
    for the fixed CPython 3.14.6 Linux fixtures by ADR 0005.
-6. debugpy integration for Python breakpoints and stepping.
+6. cross-language stepping beyond the implemented debugpy Python-stop and
+   CodeLLDB Rust-stop handoff.

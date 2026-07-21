@@ -10,6 +10,7 @@ from typing import Any, Hashable, Iterable, Literal
 
 from .coordinator import (
     CoordinationError,
+    DebugEngine,
     PROCESS_COMMAND_UNAVAILABLE,
     ProcessCoordinator,
     bounded_process_command,
@@ -181,6 +182,7 @@ class ProxySessionState:
         self._default_process_command: str | None = None
         self._processes: dict[int, ProcessSnapshot] = {}
         self._thread_processes: dict[int, int] = {}
+        self._thread_names: dict[int, str] = {}
         self.coordinator = coordinator or ProcessCoordinator()
         self.synthetic_frames = SyntheticFrameRegistry()
 
@@ -248,6 +250,7 @@ class ProxySessionState:
         role: str | None = None,
         command: str | None = None,
         inherit_default_metadata: bool = True,
+        engine: DebugEngine = "native",
     ) -> None:
         if not _valid_id(process_id):
             return
@@ -278,7 +281,7 @@ class ProxySessionState:
         self.coordinator.register_process(
             process_id,
             parent_process_id=parent_process_id,
-            engine="native",
+            engine=engine,
             display_name=label,
             role=process_role,
             command=process_command,
@@ -335,9 +338,51 @@ class ProxySessionState:
                 all_threads_stopped=existing.all_threads_stopped,
             )
             self._thread_processes[thread_id] = process_id
+            if name:
+                self._thread_names[thread_id] = name
             if activate:
                 self._active_process_id = process_id
         self.coordinator.bind_native_thread(process_id, thread_id, name=name)
+
+    def bind_python_thread(
+        self,
+        process_id: int,
+        thread_id: int,
+        *,
+        name: str | None = None,
+        activate: bool = True,
+    ) -> None:
+        """Register a PyRust-virtualized debugpy thread for one process."""
+
+        if not _valid_id(process_id) or not _valid_id(thread_id):
+            return
+        with self._lock:
+            existing = self._processes.get(process_id)
+            if existing is None:
+                existing = ProcessSnapshot(
+                    process_id=process_id,
+                    stop_epoch=0,
+                    is_stopped=False,
+                    thread_ids=frozenset(),
+                )
+            self._processes[process_id] = ProcessSnapshot(
+                process_id=process_id,
+                stop_epoch=existing.stop_epoch,
+                is_stopped=existing.is_stopped,
+                thread_ids=existing.thread_ids | {thread_id},
+                stopped_thread_ids=(
+                    existing.stopped_thread_ids | {thread_id}
+                    if existing.all_threads_stopped
+                    else existing.stopped_thread_ids
+                ),
+                all_threads_stopped=existing.all_threads_stopped,
+            )
+            self._thread_processes[thread_id] = process_id
+            if name:
+                self._thread_names[thread_id] = name
+            if activate:
+                self._active_process_id = process_id
+        self.coordinator.register_process(process_id, engine="python")
 
     def process_id_for_thread(self, thread_id: int) -> int | None:
         with self._lock:
@@ -378,7 +423,7 @@ class ProxySessionState:
                                 (
                                     session.threads.get(thread_id).name
                                     if session.threads.get(thread_id) is not None
-                                    else None
+                                    else self._thread_names.get(thread_id)
                                 )
                                 or f"Thread {thread_id}"
                             ),
@@ -411,10 +456,20 @@ class ProxySessionState:
             return
         with self._lock:
             self._processes.pop(process_id, None)
+            removed_thread_ids = {
+                thread_id
+                for thread_id, owner in self._thread_processes.items()
+                if owner == process_id
+            }
             self._thread_processes = {
                 thread_id: owner
                 for thread_id, owner in self._thread_processes.items()
                 if owner != process_id
+            }
+            self._thread_names = {
+                thread_id: name
+                for thread_id, name in self._thread_names.items()
+                if thread_id not in removed_thread_ids
             }
             if self._active_process_id == process_id:
                 self._active_process_id = next(iter(self._processes), None)
@@ -423,7 +478,12 @@ class ProxySessionState:
             )
         self.coordinator.remove_process(process_id)
 
-    def on_stopped(self, event: dict[str, Any] | None = None) -> int:
+    def on_stopped(
+        self,
+        event: dict[str, Any] | None = None,
+        *,
+        owner: DebugEngine = "native",
+    ) -> int:
         thread_id = (event.get("body") or {}).get("threadId") if event else None
         event_process_id = (
             (event.get("body") or {}).get("systemProcessId") if event else None
@@ -491,9 +551,10 @@ class ProxySessionState:
                 self._active_process_id = process_id
         if process_id is not None and _valid_id(thread_id):
             try:
-                self.coordinator.register_process(process_id, engine="native")
-                self.coordinator.bind_native_thread(process_id, thread_id)
-                self.coordinator.acquire_stop(process_id, thread_id, "native")
+                self.coordinator.register_process(process_id, engine=owner)
+                if owner == "native":
+                    self.coordinator.bind_native_thread(process_id, thread_id)
+                self.coordinator.acquire_stop(process_id, thread_id, owner)
             except CoordinationError:
                 # A future Python-owned stop must not be overwritten by a
                 # native event. The hook will fall back rather than guessing.
@@ -508,7 +569,12 @@ class ProxySessionState:
         self.synthetic_frames.begin_epoch(epoch, process_id=None)
         return epoch
 
-    def on_continued(self, event: dict[str, Any] | None = None) -> None:
+    def on_continued(
+        self,
+        event: dict[str, Any] | None = None,
+        *,
+        owner: DebugEngine = "native",
+    ) -> None:
         event_process_id = (
             (event.get("body") or {}).get("systemProcessId") if event else None
         )
@@ -552,7 +618,7 @@ class ProxySessionState:
             )
         if process_id is not None:
             try:
-                self.coordinator.release_stop(process_id, "native")
+                self.coordinator.release_stop(process_id, owner)
             except CoordinationError:
                 pass
         self.synthetic_frames.clear_current(

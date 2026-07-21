@@ -12,6 +12,7 @@
 - [ADR 0006: Process-tree coordinator](decisions/0006-process-tree-coordinator.md)
 - [ADR 0007: Process-tree view](decisions/0007-process-tree-view.md)
 - [ADR 0008: Process and thread mode contract](decisions/0008-process-thread-mode-contract.md)
+- [ADR 0009: debugpy for Python-owned stops](decisions/0009-debugpy-python-owned-stops.md)
 - [Feasibility summary](feasibility.md)
 
 ## Research reports
@@ -64,6 +65,11 @@ ADR 0005 adds read-only primitive local snapshots for the supported Python
 frames in both directions, plus safe snapshot expressions. It does not add
 Python breakpoints, stepping, object expansion, mutation, or in-target Python
 execution.
+
+ADR 0009 adds opt-in debugpy-backed Python breakpoints and full Python
+evaluation for Python-owned stops. CodeLLDB continues to own Rust stops, where
+the ADR 0005 snapshot path remains the safe Python fallback. The debugpy
+transport is PID-scoped for Python threads and spawned child processes.
 
 ADR 0006 implements the first process-tree coordinator. Two-worker
 Python-thread and Rust-thread fixtures pass. Python-parent and Rust-parent

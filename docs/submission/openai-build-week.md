@@ -91,6 +91,7 @@ replaced technical verification.
 | Python threads entering Rust | `./scripts/accept-thread-slice.sh` |
 | Python entry creating Rust worker threads | `./scripts/accept-python-rust-threads.sh` |
 | Process/thread hierarchy and lifecycle | `./scripts/accept-process-thread-mode.sh` |
+| Full Python debugpy stops and native handoff | `./scripts/accept-debugpy-slice.sh` |
 | Packaged VS Code extension | `npm run --prefix vscode-extension package` |
 | Clean Dev Container validation | `PYRUST_VERIFY_CONTAINER=1 ./scripts/verify-submission.sh` |
 
@@ -98,8 +99,10 @@ replaced technical verification.
 
 - Linux x86_64 only.
 - CPython 3.14 and the pinned CodeLLDB environment only.
-- Rust breakpoints are supported; Python breakpoints are not.
-- Python expressions run only against a read-only captured local snapshot.
+- Rust breakpoints are CodeLLDB-owned. Opt-in debugpy launch configurations
+  support Python breakpoints.
+- Python expressions use full debugpy evaluation at Python-owned stops and a
+  read-only captured local snapshot at Rust-owned stops.
 - Cross-language stepping is not supported.
 - The VSIX is a local prototype, not a Marketplace product.
 - A custom Process Tree cannot take ownership of VS Code's built-in yellow

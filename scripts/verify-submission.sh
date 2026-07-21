@@ -48,6 +48,9 @@ echo "submission verification: Rust worker-thread regression"
 echo "submission verification: process and native-thread hierarchy"
 "$ROOT/scripts/accept-process-thread-mode.sh"
 
+echo "submission verification: debugpy Python stops and native handoff"
+"$ROOT/scripts/accept-debugpy-slice.sh"
+
 echo "submission verification: VS Code extension compile and package"
 env -u NODE_OPTIONS PATH="$NODE_BIN:$PATH" npm run --prefix vscode-extension compile
 env -u NODE_OPTIONS PATH="$NODE_BIN:$PATH" npm run --prefix vscode-extension package

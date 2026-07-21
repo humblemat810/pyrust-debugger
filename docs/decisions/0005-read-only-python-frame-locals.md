@@ -4,6 +4,9 @@
 
 Accepted and implemented.
 
+Superseded in part by ADR 0009 for Python-owned debugpy stops. This ADR remains
+the active policy for Python frames observed while CodeLLDB owns a Rust stop.
+
 ## Date
 
 2026-07-20.
@@ -100,4 +103,3 @@ Negative:
 - locals can be unavailable when permission, timing, or layout checks fail;
 - snapshot expressions do not provide full Python semantics;
 - the reader is Linux and CPython 3.14.6 specific.
-

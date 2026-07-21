@@ -4,9 +4,10 @@
 
 The `pyrust` launch type is an alpha prototype. It supports a CPython process
 that enters a debug-built PyO3 extension and stops at Rust source breakpoints.
-It does not support Python breakpoints, Python-frame evaluation, stepping
-across the language boundary, or a production installer for arbitrary
-workspaces.
+Set `pyrustPythonDebug: true` to enable Python source breakpoints and normal
+debugpy evaluation in Python-owned stops. Rust-owned stops retain their
+read-only snapshot behavior. Cross-language stepping and a production
+installer for arbitrary workspaces remain unsupported.
 
 ## Copyable Configuration
 

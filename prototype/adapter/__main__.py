@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -58,7 +59,7 @@ def _default_codelldb_command(
             raise ValueError(f"configured CodeLLDB adapter does not exist: {adapter}")
         if not liblldb.is_file():
             raise ValueError(f"configured liblldb does not exist: {liblldb}")
-        return [str(adapter), "--liblldb", str(liblldb)]
+        return _codelldb_command_with_pyrust_settings(adapter, liblldb)
 
     extension_root = Path.home() / ".vscode-server" / "extensions"
     candidates = sorted(extension_root.glob("vadimcn.vscode-lldb-1.12.2*"))
@@ -66,8 +67,24 @@ def _default_codelldb_command(
         adapter = extension / "adapter" / "codelldb"
         liblldb = extension / "lldb" / "lib" / "liblldb.so"
         if adapter.is_file() and liblldb.is_file():
-            return [str(adapter), "--liblldb", str(liblldb)]
+            return _codelldb_command_with_pyrust_settings(adapter, liblldb)
     raise ValueError("CodeLLDB 1.12.2 platform package is not installed")
+
+
+def _codelldb_command_with_pyrust_settings(
+    adapter: Path,
+    liblldb: Path,
+) -> list[str]:
+    """Supply settings normally injected by CodeLLDB's VS Code extension."""
+
+    settings = json.dumps({"consoleMode": "evaluate"}, separators=(",", ":"))
+    return [
+        str(adapter),
+        "--liblldb",
+        str(liblldb),
+        "--settings",
+        settings,
+    ]
 
 
 def main() -> int:

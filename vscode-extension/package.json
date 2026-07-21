@@ -160,6 +160,15 @@
                 ],
                 "default": "all",
                 "description": "Use single only when a child fixture requires per-thread continuation."
+              },
+              "pyrustPythonDebug": {
+                "type": "boolean",
+                "default": false,
+                "description": "Enable debugpy for full Python breakpoints, variables, calls, imports, and evaluation at Python-owned stops."
+              },
+              "pyrustPythonDebugRegistry": {
+                "type": "string",
+                "description": "Optional directory used internally to register per-process debugpy endpoints."
               }
             }
           }
@@ -179,6 +188,22 @@
             "sourceLanguages": [
               "rust"
             ]
+          },
+          {
+            "type": "pyrust",
+            "request": "launch",
+            "name": "PyRust: Python Outer (debugpy)",
+            "program": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+              "${workspaceFolder}/research/fixtures/python_outer/app.py"
+            ],
+            "cwd": "${workspaceFolder}",
+            "terminal": "console",
+            "consoleMode": "evaluate",
+            "sourceLanguages": [
+              "rust"
+            ],
+            "pyrustPythonDebug": true
           },
           {
             "type": "pyrust",
@@ -230,6 +255,23 @@
           {
             "type": "pyrust",
             "request": "launch",
+            "name": "PyRust: Rust Outer (debugpy)",
+            "program": "${env:CARGO_TARGET_DIR}/debug/rust-outer-python-inner",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "env": {
+              "LD_LIBRARY_PATH": "${env:PYRUST_PYTHON_LIBDIR}"
+            },
+            "terminal": "console",
+            "consoleMode": "evaluate",
+            "sourceLanguages": [
+              "rust"
+            ],
+            "pyrustPythonDebug": true
+          },
+          {
+            "type": "pyrust",
+            "request": "launch",
             "name": "PyRust: Python Threads",
             "program": "${workspaceFolder}/.venv/bin/python",
             "args": [
@@ -241,6 +283,22 @@
             "sourceLanguages": [
               "rust"
             ]
+          },
+          {
+            "type": "pyrust",
+            "request": "launch",
+            "name": "PyRust: Python Threads (debugpy)",
+            "program": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+              "${workspaceFolder}/tests/acceptance/threaded_fixture_driver.py"
+            ],
+            "cwd": "${workspaceFolder}",
+            "terminal": "console",
+            "consoleMode": "evaluate",
+            "sourceLanguages": [
+              "rust"
+            ],
+            "pyrustPythonDebug": true
           },
           {
             "type": "pyrust",
@@ -287,6 +345,22 @@
             },
             "pyrustChildRegistryPath": "${workspaceFolder}/.pyrust-child-registry",
             "pyrustProcessMode": "children"
+          },
+          {
+            "type": "pyrust",
+            "request": "launch",
+            "name": "PyRust: Python Processes (debugpy)",
+            "program": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+              "${workspaceFolder}/tests/acceptance/multiprocess_fixture_driver.py"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+              "PYRUST_CHILD_REGISTRY": "${workspaceFolder}/.pyrust-child-registry"
+            },
+            "pyrustChildRegistryPath": "${workspaceFolder}/.pyrust-child-registry",
+            "pyrustProcessMode": "children",
+            "pyrustPythonDebug": true
           },
           {
             "type": "pyrust",

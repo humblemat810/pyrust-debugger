@@ -22,7 +22,13 @@ class CodeLldbCommandTests(unittest.TestCase):
 
         self.assertEqual(
             command,
-            [str(adapter), "--liblldb", str(liblldb)],
+            [
+                str(adapter),
+                "--liblldb",
+                str(liblldb),
+                "--settings",
+                '{"consoleMode":"evaluate"}',
+            ],
         )
 
     def test_environment_paths_are_supported(self) -> None:
@@ -44,7 +50,13 @@ class CodeLldbCommandTests(unittest.TestCase):
 
         self.assertEqual(
             command,
-            [str(adapter), "--liblldb", str(liblldb)],
+            [
+                str(adapter),
+                "--liblldb",
+                str(liblldb),
+                "--settings",
+                '{"consoleMode":"evaluate"}',
+            ],
         )
 
     def test_partial_configuration_is_rejected(self) -> None:

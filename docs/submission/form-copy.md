@@ -47,8 +47,8 @@ call frame.
 
 PyRust is intentionally an alpha Developer Tools prototype. It targets Linux
 x86_64, CPython 3.14, and the pinned CodeLLDB environment. It supports Rust
-breakpoints and read-only Python snapshots, but not Python breakpoints or
-cross-language stepping.
+breakpoints, opt-in debugpy Python breakpoints, and read-only Python snapshots
+at Rust-owned stops. Cross-language stepping is not supported.
 ```
 
 ## Built With

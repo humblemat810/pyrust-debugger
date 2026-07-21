@@ -92,8 +92,9 @@ Use [75-Second Demo Narration](narration.md) if a concise voiceover is useful.
 
 ## Avoid
 
-- Do not claim Python breakpoints or cross-language stepping.
-- Do not enter Python expressions in a synthetic Python frame.
+- Do not claim cross-language stepping.
+- Do not enter imports or calls in a synthetic Python frame at a Rust stop;
+  use a `(debugpy)` launch configuration for full Python expressions.
 - Keep the recording moving, but the manual process/thread launch now permits a
   one-hour breakpoint hold and must not terminate during normal inspection.
 
