@@ -143,8 +143,9 @@ Docker socket mount inside the Dev Container is required.
   `Developer: Reload Window` while still attached to the Dev Container.
 - If VS Code reports that no adapter descriptor exists for `pyrust`, inspect
   the `postAttachCommand` output and confirm
-  `env -u NODE_OPTIONS code --list-extensions --show-versions` includes
-  `pyrust.pyrust-debugger@0.0.1`.
+  `env -u NODE_OPTIONS code --list-extensions --show-versions` includes the
+  current `pyrust.pyrust-debugger` version listed in
+  `vscode-extension/package.json`.
 - If an interactive terminal reports a missing `ms-vscode.js-debug` bootloader
   while running `code`, retry that command with `env -u NODE_OPTIONS`. This
   stale JavaScript-debugger preload does not affect the PyRust VSIX install.

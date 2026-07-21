@@ -13,11 +13,15 @@ tree-model tests remain the primary correctness checks.
 2. Package and install the current extension from the Dev Container terminal:
 
 ```bash
-npm run --prefix vscode-extension package
+env -u NODE_OPTIONS /opt/node/bin/npm run --prefix vscode-extension package
+rm -f ~/.pyrust-debugger/vsix.sha256
 bash .devcontainer/install-vscode-extension.sh
+env -u NODE_OPTIONS code --list-extensions --show-versions | grep -Fx \
+  'pyrust.pyrust-debugger@0.0.2'
 ```
 
-3. Run `Developer: Reload Window`.
+3. Run `Developer: Reload Window`. If the extension was updated while a
+   debug session was running, stop that session first.
 4. Open **Run and Debug**. In the Debug sidebar, find **PyRust Process Tree**.
    It stays visible even before a PyRust session starts and is empty until one
    is active.

@@ -2,7 +2,7 @@
   "name": "pyrust-debugger",
   "displayName": "PyRust Debugger",
   "description": "Fixture-bound mixed Python and Rust stack debugger.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "pyrust",
   "license": "UNLICENSED",
   "engines": {
@@ -15,7 +15,8 @@
     "workspace"
   ],
   "activationEvents": [
-    "onDebug"
+    "onDebug",
+    "onView:pyrustProcessTree"
   ],
   "main": "./out/extension.js",
   "contributes": {

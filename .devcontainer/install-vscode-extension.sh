@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 WORKSPACE_VSIX="$ROOT/vscode-extension/pyrust-debugger.vsix"
 IMAGE_VSIX="/opt/pyrust-extension/pyrust-debugger.vsix"
-EXTENSION="pyrust.pyrust-debugger@0.0.1"
 STATE_DIR="$HOME/.pyrust-debugger"
 STATE_FILE="$STATE_DIR/vsix.sha256"
 
@@ -68,6 +67,28 @@ else
     echo "PyRust extension install: packaged VSIX is missing" >&2
     exit 1
 fi
+
+extension_identity() {
+    local node_bin="/opt/node/bin/node"
+    if [[ ! -x "$node_bin" ]]; then
+        node_bin="$(command -v node)"
+    fi
+
+    unzip -p "$VSIX" extension/package.json \
+        | env -u NODE_OPTIONS "$node_bin" -e '
+            let input = "";
+            process.stdin.setEncoding("utf8");
+            process.stdin.on("data", (chunk) => (input += chunk));
+            process.stdin.on("end", () => {
+                const manifest = JSON.parse(input);
+                process.stdout.write(
+                    `${manifest.publisher}.${manifest.name}@${manifest.version}`,
+                );
+            });
+        '
+}
+
+EXTENSION="$(extension_identity)"
 
 is_installed() {
     env -u NODE_OPTIONS code --list-extensions --show-versions \
