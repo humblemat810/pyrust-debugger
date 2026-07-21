@@ -20,6 +20,16 @@ Start with the [Developer Tools submission narrative](docs/submission/openai-bui
 [demo runbook](docs/submission/demo-runbook.md), and
 [submission checklist](docs/submission/checklist.md).
 
+## Built With Codex and GPT-5.6
+
+It is just like a chat partner and ask for explicit permissions whenever needed.
+Sometimes it misinterpret but we are like code-surfing. It comes at speed and you
+need to drive carefully.
+
+You can insert objection and it can follow up with mutiline of thinking.
+
+But for hard problems it needs some iterations.
+
 ## Quick Demo Gate
 
 In the Dev Container, run:
