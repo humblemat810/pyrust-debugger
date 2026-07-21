@@ -29,6 +29,16 @@ class _ContextProxy:
         *,
         timeout: float | None,
     ) -> dict[str, object]:
+        if command == "threads":
+            return {
+                "success": True,
+                "body": {
+                    "threads": [
+                        {"id": 77, "name": "rust-child-A"},
+                        {"id": 78, "name": "rust-child-B"},
+                    ]
+                },
+            }
         assert arguments is not None
         self.stack_arguments.append(dict(arguments))
         return {
@@ -97,6 +107,26 @@ class MixedStackHooksTests(unittest.TestCase):
         self.assertEqual(
             self.proxy.stack_arguments,
             [{"threadId": 77, "format": {"hex": True}}],
+        )
+
+    def test_process_tree_refreshes_native_threads_without_call_stack_request(self) -> None:
+        self.state.register_process(100, display_name="Python process")
+        self.state.on_stopped(
+            {"body": {"systemProcessId": 100, "threadId": 77}}
+        )
+
+        response = self.hooks.on_process_tree({}, self.context)
+
+        self.assertTrue(response.success)
+        assert response.body is not None
+        process = response.body["processes"][0]
+        self.assertEqual(
+            [thread["threadId"] for thread in process["threads"]],
+            [77, 78],
+        )
+        self.assertEqual(
+            [thread["name"] for thread in process["threads"]],
+            ["rust-child-A", "rust-child-B"],
         )
 
     def test_python_outer_golden_merge_preserves_native_frames(self) -> None:

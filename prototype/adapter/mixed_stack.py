@@ -277,8 +277,21 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse:
         del request
-        if self._process_manager is not None:
-            self._process_manager.refresh_threads()
+        manager = self._process_manager
+        if manager is not None:
+            manager.refresh_threads()
+        else:
+            # The custom view is refreshed independently of VS Code's built-in
+            # Call Stack. Refresh native threads here so both views start from
+            # the same CodeLLDB thread inventory.
+            try:
+                response = context.request_downstream("threads", {}, timeout=5)
+                if response.get("success") is True:
+                    context.state.record_threads_response(response)
+            except Exception:
+                # Retain the stopped-thread snapshot if CodeLLDB is between
+                # lifecycle states or cannot answer this optional refresh.
+                pass
         return LocalResponse(body={"processes": context.state.process_tree()})
 
     def on_scopes(

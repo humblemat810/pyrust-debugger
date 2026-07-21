@@ -110,9 +110,42 @@ def _assert_rust_child_stop(client: DapClient, stopped: dict[str, Any]) -> int:
     return thread_id
 
 
+def _assert_tree_matches_dap_threads(client: DapClient) -> None:
+    threads_request = client.send("threads")
+    dap_threads = client.response(threads_request, timeout=10).get("body", {}).get(
+        "threads"
+    )
+    if not isinstance(dap_threads, list):
+        raise DapError(f"DAP threads response was malformed: {dap_threads}")
+    expected_ids = {
+        thread["id"]
+        for thread in dap_threads
+        if isinstance(thread, dict) and isinstance(thread.get("id"), int)
+    }
+    tree_request = client.send("pyrust/processTree")
+    processes = client.response(tree_request, timeout=10).get("body", {}).get(
+        "processes"
+    )
+    if not isinstance(processes, list):
+        raise DapError(f"process tree was malformed: {processes}")
+    actual_ids = {
+        thread["threadId"]
+        for process in processes
+        if isinstance(process, dict)
+        for thread in process.get("threads", [])
+        if isinstance(thread, dict) and isinstance(thread.get("threadId"), int)
+    }
+    if not expected_ids.issubset(actual_ids):
+        raise DapError(
+            "process tree omitted threads that the Call Stack can display: "
+            f"missing {expected_ids - actual_ids}"
+        )
+
+
 def python_threads_create_rust_threads() -> None:
     client, stopped = _start_fixture()
     try:
+        _assert_tree_matches_dap_threads(client)
         seen: set[str] = set()
         for index in range(len(EXPECTED_WORKERS)):
             thread_id = _assert_rust_child_stop(client, stopped)
