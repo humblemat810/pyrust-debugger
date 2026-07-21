@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import {
   focusFrame,
   focusThread,
+  PyRustFrameHighlighter,
   PyRustProcessTreeProvider,
 } from "./processTree";
 
@@ -118,7 +119,9 @@ class PyRustConfigurationProvider
 
 export function activate(context: vscode.ExtensionContext): void {
   const processTree = new PyRustProcessTreeProvider();
+  const frameHighlighter = new PyRustFrameHighlighter();
   context.subscriptions.push(
+    frameHighlighter,
     vscode.debug.registerDebugAdapterDescriptorFactory(
       "pyrust",
       new PyRustAdapterFactory(),
@@ -128,8 +131,12 @@ export function activate(context: vscode.ExtensionContext): void {
       new PyRustConfigurationProvider(),
     ),
     vscode.window.registerTreeDataProvider("pyrustProcessTree", processTree),
-    vscode.commands.registerCommand("pyrust.focusFrame", focusFrame),
-    vscode.commands.registerCommand("pyrust.focusThread", focusThread),
+    vscode.commands.registerCommand("pyrust.focusFrame", (node) =>
+      focusFrame(frameHighlighter, node),
+    ),
+    vscode.commands.registerCommand("pyrust.focusThread", (node) =>
+      focusThread(frameHighlighter, node),
+    ),
     vscode.debug.onDidStartDebugSession((session) => {
       if (session.type === "pyrust") {
         void processTree.refresh(session);
@@ -137,6 +144,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.debug.onDidTerminateDebugSession((session) => {
       processTree.clear(session);
+      if (session.type === "pyrust") {
+        frameHighlighter.clear();
+      }
     }),
     vscode.debug.registerDebugAdapterTrackerFactory("pyrust", {
       createDebugAdapterTracker(session) {

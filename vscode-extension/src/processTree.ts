@@ -254,7 +254,60 @@ export class PyRustProcessTreeProvider
   }
 }
 
-export async function focusThread(node?: ProcessTreeNode): Promise<void> {
+export class PyRustFrameHighlighter implements vscode.Disposable {
+  private readonly decoration = vscode.window.createTextEditorDecorationType({
+    isWholeLine: true,
+    backgroundColor: "rgba(255, 193, 7, 0.22)",
+    borderColor: "rgba(255, 193, 7, 0.92)",
+    borderStyle: "solid",
+    borderWidth: "1px 0",
+    overviewRulerColor: "rgba(255, 193, 7, 0.92)",
+    overviewRulerLane: vscode.OverviewRulerLane.Center,
+    light: {
+      backgroundColor: "rgba(255, 193, 7, 0.38)",
+      borderColor: "rgba(130, 82, 0, 0.95)",
+    },
+    dark: {
+      backgroundColor: "rgba(255, 193, 7, 0.28)",
+      borderColor: "rgba(255, 214, 92, 0.95)",
+    },
+  });
+  private editor: vscode.TextEditor | undefined;
+
+  async open(frame: PyRustStackFrame | undefined): Promise<void> {
+    const sourcePath = frame?.source?.path;
+    if (!sourcePath || !frame?.line) {
+      return;
+    }
+    const document = await vscode.workspace.openTextDocument(sourceUri(sourcePath));
+    const range = new vscode.Range(frame.line - 1, 0, frame.line - 1, 0);
+    const previousEditor = this.editor;
+    const editor = await vscode.window.showTextDocument(document, {
+      selection: range,
+      preserveFocus: false,
+    });
+    if (previousEditor && previousEditor !== editor) {
+      previousEditor.setDecorations(this.decoration, []);
+    }
+    editor.setDecorations(this.decoration, [range]);
+    this.editor = editor;
+  }
+
+  clear(): void {
+    this.editor?.setDecorations(this.decoration, []);
+    this.editor = undefined;
+  }
+
+  dispose(): void {
+    this.clear();
+    this.decoration.dispose();
+  }
+}
+
+export async function focusThread(
+  highlighter: PyRustFrameHighlighter,
+  node?: ProcessTreeNode,
+): Promise<void> {
   if (!node || node.kind !== "thread") {
     return;
   }
@@ -270,29 +323,20 @@ export async function focusThread(node?: ProcessTreeNode): Promise<void> {
     startFrame: 0,
     levels: 1,
   })) as { stackFrames?: PyRustStackFrame[] };
-  await openFrame(response.stackFrames?.[0]);
+  await highlighter.open(response.stackFrames?.[0]);
   void vscode.window.showInformationMessage(
     `Focused PyRust thread ${node.thread.threadId} in ${node.process.label}.`,
   );
 }
 
-export async function focusFrame(node?: ProcessTreeNode): Promise<void> {
+export async function focusFrame(
+  highlighter: PyRustFrameHighlighter,
+  node?: ProcessTreeNode,
+): Promise<void> {
   if (!node || node.kind !== "frame") {
     return;
   }
-  await openFrame(node.frame);
-}
-
-async function openFrame(frame: PyRustStackFrame | undefined): Promise<void> {
-  const sourcePath = frame?.source?.path;
-  if (!sourcePath || !frame?.line) {
-    return;
-  }
-  const document = await vscode.workspace.openTextDocument(sourceUri(sourcePath));
-  await vscode.window.showTextDocument(document, {
-    selection: new vscode.Range(frame.line - 1, 0, frame.line - 1, 0),
-    preserveFocus: false,
-  });
+  await highlighter.open(node.frame);
 }
 
 export function sourceUri(sourcePath: string): vscode.Uri {

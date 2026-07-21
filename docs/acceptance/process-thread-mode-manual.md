@@ -68,6 +68,9 @@ under that thread. Running threads do not expose a stack until they stop.
 
 Clicking a worker thread must focus its top source frame at
 `lib.rs:6`. The standard DAP Threads view remains flat.
+The selected source line also receives a high-contrast amber PyRust decoration.
+It is navigation feedback from this custom tree, not the built-in debugger's
+yellow active-frame marker.
 
 ## Expected Call Stack
 
