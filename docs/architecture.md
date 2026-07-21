@@ -37,6 +37,15 @@ debugpy endpoint per registered Python process. debugpy owns Python
 source-breakpoint stops; CodeLLDB owns Rust stops. The proxy must not query
 debugpy while CodeLLDB has externally stopped the target.
 
+This ownership rule limits what a displayed frame can do. A Python frame
+inserted into a CodeLLDB-owned Rust stop is a proxy-owned snapshot frame. It
+can expose matched primitive locals and evaluate the bounded safe expression
+subset, but it cannot run Python bytecode, imports, function calls, object
+expansion, or mutation. Full Python evaluation is available only for a
+debugpy-owned Python stop. The mixed stack is therefore a unified
+presentation and routing layer, not simultaneous ownership of one frozen
+process by both engines.
+
 ## Validated alternative
 
 CodeLLDB's bundled LLDB 22.1.4 supports `ScriptedFrameProvider`. A research

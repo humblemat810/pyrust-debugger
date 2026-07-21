@@ -115,6 +115,26 @@ Python stop, expressions such as `type(2).__name__` and
 `__import__('sys').version_info[:2]` work normally. Continue to the Rust
 breakpoint to return to the merged Python/Rust stack.
 
+## Debugger Ownership Limitation
+
+PyRust presents Python and Rust frames in one VS Code session, but a stopped
+process still has one active debugger owner:
+
+- At a Python-owned stop, debugpy provides normal Python evaluation, imports,
+  function calls, object expansion, and Python stepping.
+- At a Rust-owned stop, CodeLLDB provides normal Rust evaluation and native
+  debugging. Python frames recovered from that stop are read-only snapshots.
+
+Snapshot Python frames support primitive locals and the documented safe
+expression subset, such as `value + 1`. They do not execute code in CPython,
+so expressions such as `import sys`, function calls, object mutation, and
+arbitrary imports are expected to fail. Use a `(debugpy)` launch configuration
+and stop at a Python breakpoint when full Python evaluation is required.
+
+This is an execution-ownership boundary, not a missing UI toggle. Showing a
+Python frame nested in a Rust-owned stack does not make debugpy safe to query
+while CodeLLDB has externally frozen the process.
+
 The two executable research fixtures and observed CodeLLDB results are
 documented in [the fixture report](docs/research/fixture-results.md).
 

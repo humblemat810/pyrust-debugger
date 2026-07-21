@@ -111,6 +111,18 @@ class FakeDebugpyTransport:
         self.closed = True
 
 
+class FailingDebugpyTransport(FakeDebugpyTransport):
+    def start(
+        self,
+        *,
+        host: str,
+        port: int,
+        breakpoints: Sequence[Mapping[str, Any]],
+    ) -> None:
+        del host, port, breakpoints
+        raise RuntimeError("fixture attach failure")
+
+
 class PythonProcessManagerTests(unittest.TestCase):
     def test_python_routes_are_virtualized_and_release_ownership_on_continue(
         self,
@@ -207,6 +219,47 @@ class PythonProcessManagerTests(unittest.TestCase):
             )
             manager.close()
             self.assertTrue(created[0].closed)
+
+    def test_attach_failure_is_marked_and_not_retried(self) -> None:
+        state = ProxySessionState()
+        emitted: list[tuple[str, Mapping[str, Any]]] = []
+        created: list[FailingDebugpyTransport] = []
+        with TemporaryDirectory() as directory:
+            registry = Path(directory)
+
+            def factory(
+                event_handler: Callable[[Message], None],
+            ) -> FailingDebugpyTransport:
+                transport = FailingDebugpyTransport(event_handler)
+                created.append(transport)
+                return transport
+
+            manager = PythonProcessManager(
+                registry_path=registry,
+                state=state,
+                emit_event=lambda event, body: emitted.append((event, body)),
+                transport_factory=factory,
+            )
+            record = {
+                "pid": 700,
+                "parentPid": 600,
+                "host": "127.0.0.1",
+                "port": 5678,
+            }
+
+            manager._start_process(record)
+            manager._start_process(record)
+
+            self.assertEqual(len(created), 1)
+            self.assertTrue((registry / "debugpy-700.failed").is_file())
+            self.assertTrue(
+                any(
+                    "attach failed" in str(body.get("output", ""))
+                    for event, body in emitted
+                    if event == "output"
+                )
+            )
+            manager.close()
 
 
 if __name__ == "__main__":

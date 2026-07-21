@@ -264,7 +264,9 @@ selectable.
 
 1. Select `PyRust: Python Outer (debugpy)`.
 2. Open `research/fixtures/python_outer/app.py` and set a breakpoint at line
-   10, before `python_inner(value)` is called.
+   10, before `python_inner(value)` is called. The workspace enables
+   `debug.allowBreakpointsEverywhere`, so clicking the editor gutter or
+   pressing `F9` creates the red breakpoint before a debug session starts.
 3. Also set the existing Rust breakpoint at
    `research/fixtures/python_outer/src/lib.rs:6`.
 4. Start debugging. The first stop must be `python_outer` in `app.py`.

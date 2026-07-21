@@ -406,6 +406,8 @@ class PythonProcessManager:
             transport.close()
             with self._lock:
                 self._sessions.pop(process_id, None)
+                self._retired_process_ids.add(process_id)
+            self._write_attach_failure(process_id, error)
             self._emit_event(
                 "output",
                 {
@@ -416,6 +418,15 @@ class PythonProcessManager:
                     ),
                 },
             )
+
+    def _write_attach_failure(self, process_id: int, error: Exception) -> None:
+        marker = self._registry_path / f"debugpy-{process_id}.failed"
+        temporary = marker.with_name(f".{marker.name}.tmp")
+        try:
+            temporary.write_text(str(error), encoding="utf-8")
+            temporary.replace(marker)
+        except OSError:
+            temporary.unlink(missing_ok=True)
 
     def _handle_event(self, process_id: int, event: Message) -> None:
         name = event.get("event")

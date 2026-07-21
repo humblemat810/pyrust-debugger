@@ -12,6 +12,10 @@ import os
 from pathlib import Path
 import sys
 import threading
+import time
+
+
+_DEFAULT_ATTACH_TIMEOUT_SECONDS = 15.0
 
 
 def _is_debugpy_internal_process() -> bool:
@@ -23,7 +27,7 @@ def _is_debugpy_internal_process() -> bool:
     )
 
 
-def _write_endpoint(registry: Path, host: str, port: int) -> None:
+def _write_endpoint(registry: Path, host: str, port: int) -> Path:
     process_id = os.getpid()
     payload = {
         "pid": process_id,
@@ -41,9 +45,39 @@ def _write_endpoint(registry: Path, host: str, port: int) -> None:
         ],
     }
     target = registry / f"debugpy-{process_id}.json"
+    target.with_suffix(".failed").unlink(missing_ok=True)
     temporary = target.with_name(f".{target.name}.{process_id}.tmp")
     temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     os.replace(temporary, target)
+    return target
+
+
+def _attach_timeout_seconds() -> float:
+    raw_value = os.environ.get("PYRUST_DEBUGPY_WAIT_TIMEOUT_SECONDS", "")
+    if not raw_value:
+        return _DEFAULT_ATTACH_TIMEOUT_SECONDS
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return _DEFAULT_ATTACH_TIMEOUT_SECONDS
+    return value if value > 0 else _DEFAULT_ATTACH_TIMEOUT_SECONDS
+
+
+def _wait_for_client(
+    debugpy_module: object,
+    endpoint_record: Path,
+    timeout_seconds: float,
+) -> bool:
+    failure_marker = endpoint_record.with_suffix(".failed")
+    deadline = time.monotonic() + timeout_seconds
+    is_connected = getattr(debugpy_module, "is_client_connected")
+    while time.monotonic() < deadline:
+        if is_connected():
+            return True
+        if failure_marker.is_file():
+            return False
+        time.sleep(0.025)
+    return bool(is_connected())
 
 
 def _bootstrap() -> None:
@@ -61,9 +95,16 @@ def _bootstrap() -> None:
     host, port = debugpy.listen(("127.0.0.1", 0))
     registry = Path(registry_value)
     registry.mkdir(parents=True, exist_ok=True)
-    _write_endpoint(registry, host, port)
+    endpoint_record = _write_endpoint(registry, host, port)
     if os.environ.get("PYRUST_DEBUGPY_WAIT_FOR_CLIENT") == "1":
-        debugpy.wait_for_client()
+        timeout_seconds = _attach_timeout_seconds()
+        if not _wait_for_client(debugpy, endpoint_record, timeout_seconds):
+            print(
+                "PyRust debugpy attach did not complete; continuing without "
+                "Python breakpoint support",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 _bootstrap()

@@ -41,6 +41,9 @@ For each Python process, PyRust:
 
 For an embedded interpreter in the Rust-outer fixture, the Rust host imports
 the bootstrap explicitly when the same opt-in environment is present.
+The bootstrap waits only for a bounded interval. If the private debugpy attach
+fails, the coordinator records that failure and the embedded interpreter
+continues so CodeLLDB can still reach later Rust breakpoints.
 
 ## Ownership Rule
 
@@ -59,6 +62,13 @@ acquires CodeLLDB ownership.
 PyRust does not ask debugpy for threads, frames, or variables while CodeLLDB
 owns a native stop. The empirical native-stop probe shows those in-process
 requests can hang.
+
+This is a hard capability boundary for the current design. A Python frame
+shown inside a Rust-owned stack is not a live debugpy frame. It is a
+read-only, externally recovered snapshot and must not be presented as
+supporting arbitrary Python execution. In particular, `import sys`, function
+calls, object expansion, and mutation are unsupported at that stop. Users
+must stop at a Python breakpoint for full Python expression evaluation.
 
 ## Concurrency
 
@@ -107,8 +117,12 @@ Negative:
 - Python and Rust frames are not interleaved at a Python-owned stop; that stop
   displays debugpy's Python stack, then a later Rust stop displays the merged
   native stack;
+- Python frames displayed at Rust-owned stops are snapshot-only and cannot
+  execute arbitrary Python expressions;
 - cross-language stepping remains unsupported;
 - an arbitrary external Python embedder must import the opt-in bootstrap if it
   does not load `sitecustomize`;
 - debugpy and CodeLLDB still cannot inspect the same process simultaneously
   while one owns a stop.
+- a failed debugpy attach disables Python breakpoints for that process, but it
+  falls back to native execution instead of permanently blocking the Rust host.
