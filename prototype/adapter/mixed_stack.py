@@ -60,6 +60,9 @@ class MixedStackHooks(ProxyHooks):
         self._helper_command: str | None = None
         self._helper_timeout_ms = 1_000
         self._stopped_thread_id: int | None = None
+        # VS Code may omit frameId for Debug Console input. A scopes request is
+        # its reliable signal that a user selected a Call Stack frame.
+        self._console_frame_id: int | None = None
         self._diagnosed_epochs: set[int] = set()
         self._in_process_worker_active = False
         self._in_process_circuit_open = False
@@ -126,6 +129,7 @@ class MixedStackHooks(ProxyHooks):
             self._helper_command = helper_command
             self._helper_timeout_ms = helper_timeout_ms or 1_000
             self._stopped_thread_id = None
+            self._console_frame_id = None
             self._diagnosed_epochs.clear()
             self._child_only_mode = process_mode == "children"
             if process_metadata is not None:
@@ -204,11 +208,13 @@ class MixedStackHooks(ProxyHooks):
                 and thread_id > 0
                 else None
             )
+            self._console_frame_id = None
         return event
 
     def on_continued(self, event: Message, context: ProxyContext) -> Message:
         with self._lock:
             self._stopped_thread_id = None
+            self._console_frame_id = None
         return event
 
     def on_threads(
@@ -380,6 +386,9 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         frame_id = (request.get("arguments") or {}).get("frameId")
+        if isinstance(frame_id, int) and not isinstance(frame_id, bool):
+            with self._lock:
+                self._console_frame_id = frame_id
         python_manager = self._python_manager
         if (
             python_manager is not None
@@ -399,7 +408,7 @@ class MixedStackHooks(ProxyHooks):
             except ChildTransportError as error:
                 return LocalResponse(success=False, message=str(error))
             return LocalResponse(body=dict(response.get("body") or {}))
-        frame = self._current_python_frame(request, context)
+        frame = self._current_python_frame_id(frame_id, context)
         if frame is None:
             return None
         locals_snapshot = frame.get("locals")
@@ -488,7 +497,7 @@ class MixedStackHooks(ProxyHooks):
         request: Message,
         context: ProxyContext,
     ) -> LocalResponse | None:
-        frame_id = (request.get("arguments") or {}).get("frameId")
+        frame_id = self._console_frame_id_for(request)
         python_manager = self._python_manager
         if (
             python_manager is not None
@@ -511,7 +520,7 @@ class MixedStackHooks(ProxyHooks):
             except ChildTransportError as error:
                 return LocalResponse(success=False, message=str(error))
             return LocalResponse(body=dict(response.get("body") or {}))
-        frame = self._current_python_frame(request, context)
+        frame = self._current_python_frame_id(frame_id, context)
         if frame is None:
             return None
         locals_snapshot = frame.get("locals")
@@ -1211,17 +1220,23 @@ class MixedStackHooks(ProxyHooks):
         context.send_event(event, body)
 
     @staticmethod
-    def _current_python_frame(
-        request: Message,
+    def _current_python_frame_id(
+        frame_id: object,
         context: ProxyContext,
     ) -> dict[str, Any] | None:
-        frame_id = (request.get("arguments") or {}).get("frameId")
         if not isinstance(frame_id, int):
             return None
         synthetic = context.synthetic_frames.get(frame_id)
         if synthetic is None or not isinstance(synthetic.value, dict):
             return None
         return synthetic.value
+
+    def _console_frame_id_for(self, request: Message) -> int | None:
+        frame_id = (request.get("arguments") or {}).get("frameId")
+        if isinstance(frame_id, int) and not isinstance(frame_id, bool):
+            return frame_id
+        with self._lock:
+            return self._console_frame_id
 
 
 def _dap_variable(name: str, value: object) -> dict[str, Any]:

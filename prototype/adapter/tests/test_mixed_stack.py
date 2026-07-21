@@ -700,6 +700,30 @@ class MixedStackHooksTests(unittest.TestCase):
             evaluated.body,
             {"result": "21", "type": "int", "variablesReference": 0},
         )
+        frameless_console = self.hooks.on_evaluate(
+            {"arguments": {"expression": "label"}},
+            self.context,
+        )
+        self.assertEqual(
+            frameless_console.body,
+            {
+                "result": "'python-to-rust'",
+                "type": "str",
+                "variablesReference": 0,
+            },
+        )
+        self.assertIsNone(
+            self.hooks.on_scopes(
+                {"arguments": {"frameId": 101}},
+                self.context,
+            )
+        )
+        self.assertIsNone(
+            self.hooks.on_evaluate(
+                {"arguments": {"expression": "native_value"}},
+                self.context,
+            )
+        )
         boolean_short_circuit = self.hooks.on_evaluate(
             {
                 "arguments": {
