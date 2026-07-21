@@ -78,9 +78,10 @@ session routes native frames and commands to CodeLLDB, live Python frames and
 commands to debugpy, and Rust-stop Python frames to the bounded snapshot
 reader.
 
-ADR 0011 defines the remaining fully live foreign-frame requirement. Mutation
-works through the owning engine, but writable Python frames inside a
-Rust-owned stop still require the proposed in-target CPython bridge.
+ADR 0011 records the product invariant: every displayed frame must use its
+real language debugger when selected, independent of which engine caused the
+stop. The current coordinator is explicitly incomplete under that invariant;
+owner-engine mutation works, but foreign-language frames are not fully live.
 
 ADR 0006 implements the first process-tree coordinator. Two-worker
 Python-thread and Rust-thread fixtures pass. Python-parent and Rust-parent

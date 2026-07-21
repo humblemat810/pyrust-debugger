@@ -39,8 +39,9 @@ Show and expand **PyRust Process Tree**.
 > Clicking a Process Tree frame navigates to its source. PyRust currently
 > supports Rust breakpoints, live debugpy Python stops, and read-only Python
 > recovery inside Rust-owned stops on Linux with CPython 3.14. A Python Step
-> Into can hand off to a configured Rust breakpoint; automatic cross-language
-> destination discovery is future work.
+> Into on a direct `rust_*` call creates a temporary native breakpoint and
+> hands control to CodeLLDB automatically. More dynamic call forms remain
+> future work.
 
 Click `rust_inner` in the Process Tree, briefly show the amber navigation
 decoration, then end the recording.

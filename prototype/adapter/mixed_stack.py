@@ -75,6 +75,8 @@ class MixedStackHooks(ProxyHooks):
         self._child_only_process: subprocess.Popen[bytes] | None = None
         self._child_only_mode = False
         self._restart_arguments: dict[str, Any] | None = None
+        self._function_breakpoints: list[dict[str, Any]] = []
+        self._temporary_native_step_target: str | None = None
 
     def on_launch(
         self,
@@ -136,6 +138,7 @@ class MixedStackHooks(ProxyHooks):
             self._diagnosed_epochs.clear()
             self._child_only_mode = process_mode == "children"
             self._restart_arguments = None
+            self._temporary_native_step_target = None
             if process_metadata is not None:
                 context.state.set_default_process_metadata(*process_metadata)
             if self._process_manager is not None:
@@ -204,6 +207,7 @@ class MixedStackHooks(ProxyHooks):
         return outgoing
 
     def on_stopped(self, event: Message, context: ProxyContext) -> Message:
+        self._restore_function_breakpoints(context)
         thread_id = (event.get("body") or {}).get("threadId")
         with self._lock:
             self._stopped_thread_id = (
@@ -303,18 +307,52 @@ class MixedStackHooks(ProxyHooks):
     ) -> LocalResponse | None:
         thread_id = (request.get("arguments") or {}).get("threadId")
         python_manager = self._python_manager
-        if python_manager is None or not python_manager.owns_thread(thread_id):
-            return None
-        assert isinstance(thread_id, int)
-        try:
-            response = python_manager.step_thread(
-                str(request["command"]),
-                thread_id,
-                request.get("arguments") or {},
+        if python_manager is not None and python_manager.owns_thread(thread_id):
+            assert isinstance(thread_id, int)
+            if request.get("command") == "stepIn":
+                self._prepare_native_step_target(
+                    python_manager,
+                    thread_id,
+                    context,
+                )
+            try:
+                response = python_manager.step_thread(
+                    str(request["command"]),
+                    thread_id,
+                    request.get("arguments") or {},
+                )
+            except PythonTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
+        manager = self._process_manager
+        if manager is not None and manager.owns_thread(thread_id):
+            assert isinstance(thread_id, int)
+            try:
+                response = manager.step_thread(
+                    str(request["command"]),
+                    thread_id,
+                    request.get("arguments") or {},
+                )
+            except ChildTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
+        return None
+
+    def on_set_function_breakpoints(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        del context
+        breakpoints = (request.get("arguments") or {}).get("breakpoints")
+        with self._lock:
+            self._function_breakpoints = (
+                [dict(item) for item in breakpoints if isinstance(item, dict)]
+                if isinstance(breakpoints, list)
+                else []
             )
-        except PythonTransportError as error:
-            return LocalResponse(success=False, message=str(error))
-        return LocalResponse(body=dict(response.get("body") or {}))
+            self._temporary_native_step_target = None
+        return None
 
     def on_pause_request(
         self,
@@ -323,14 +361,22 @@ class MixedStackHooks(ProxyHooks):
     ) -> LocalResponse | None:
         thread_id = (request.get("arguments") or {}).get("threadId")
         python_manager = self._python_manager
-        if python_manager is None or not python_manager.owns_thread(thread_id):
-            return None
-        assert isinstance(thread_id, int)
-        try:
-            response = python_manager.pause_thread(thread_id)
-        except PythonTransportError as error:
-            return LocalResponse(success=False, message=str(error))
-        return LocalResponse(body=dict(response.get("body") or {}))
+        if python_manager is not None and python_manager.owns_thread(thread_id):
+            assert isinstance(thread_id, int)
+            try:
+                response = python_manager.pause_thread(thread_id)
+            except PythonTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
+        manager = self._process_manager
+        if manager is not None and manager.owns_thread(thread_id):
+            assert isinstance(thread_id, int)
+            try:
+                response = manager.pause_thread(thread_id)
+            except ChildTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
+        return None
 
     def on_restart(
         self,
@@ -1404,13 +1450,60 @@ class MixedStackHooks(ProxyHooks):
             self.on_continued(message, context)
         context.send_event(event, body)
 
-    @staticmethod
     def _emit_python_event(
+        self,
         context: ProxyContext,
         event: str,
         body: Mapping[str, Any],
     ) -> None:
+        if event == "stopped":
+            self._restore_function_breakpoints(context)
         context.send_event(event, body)
+
+    def _prepare_native_step_target(
+        self,
+        manager: PythonProcessManager,
+        thread_id: int,
+        context: ProxyContext,
+    ) -> None:
+        try:
+            target = manager.direct_native_step_target(thread_id)
+        except PythonTransportError:
+            return
+        if target is None:
+            return
+        with self._lock:
+            user_breakpoints = [dict(item) for item in self._function_breakpoints]
+            if any(item.get("name") == target for item in user_breakpoints):
+                return
+            self._temporary_native_step_target = target
+        try:
+            response = context.request_downstream(
+                "setFunctionBreakpoints",
+                {"breakpoints": [*user_breakpoints, {"name": target}]},
+                timeout=10,
+            )
+            if response.get("success") is not True:
+                with self._lock:
+                    self._temporary_native_step_target = None
+        except Exception:
+            with self._lock:
+                self._temporary_native_step_target = None
+
+    def _restore_function_breakpoints(self, context: ProxyContext) -> None:
+        with self._lock:
+            if self._temporary_native_step_target is None:
+                return
+            self._temporary_native_step_target = None
+            breakpoints = [dict(item) for item in self._function_breakpoints]
+        try:
+            context.request_downstream(
+                "setFunctionBreakpoints",
+                {"breakpoints": breakpoints},
+                timeout=10,
+            )
+        except Exception:
+            pass
 
     @staticmethod
     def _current_python_frame_id(

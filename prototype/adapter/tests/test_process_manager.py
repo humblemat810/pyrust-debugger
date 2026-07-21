@@ -93,7 +93,7 @@ class FakeChildTransport:
                     "variablesReference": 0,
                 },
             }
-        if command == "continue":
+        if command in {"continue", "next", "stepIn", "stepOut", "pause"}:
             return {"success": True, "body": {"allThreadsContinued": True}}
         raise AssertionError(f"unexpected fake request {command!r}")
 
@@ -169,6 +169,28 @@ class ProcessManagerTests(unittest.TestCase):
             )
             self.assertEqual(manager.evaluate(frame_id, {"expression": "value + 1"})["body"]["result"], "21")
 
+            manager.pause_thread(701)
+            self.assertEqual(created[0].calls[-1], ("pause", {"threadId": 701}))
+            manager.step_thread(
+                "stepIn",
+                701,
+                {"granularity": "line", "singleThread": True},
+            )
+            self.assertEqual(
+                created[0].calls[-1],
+                (
+                    "stepIn",
+                    {
+                        "granularity": "line",
+                        "singleThread": True,
+                        "threadId": 701,
+                    },
+                ),
+            )
+            self.assertIsNone(manager.native_frame_route(frame_id))
+
+            stack = manager.stack_trace(701, {})
+            frame_id = stack["body"]["stackFrames"][0]["id"]
             manager.continue_thread(701)
             self.assertIsNone(manager.native_frame_route(frame_id))
             self.assertTrue(created[0].calls[-1][0] == "continue")

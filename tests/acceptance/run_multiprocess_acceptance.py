@@ -29,6 +29,7 @@ CRITERIA = (
     "AC-MP-03",
     "AC-MP-04",
     "AC-MP-05",
+    "AC-MP-06",
 )
 
 
@@ -216,6 +217,28 @@ def two_child_happy_path() -> None:
             client.close()
 
 
+def child_native_step_routes_to_owning_codelldb() -> None:
+    with TemporaryDirectory(prefix="pyrust-child-step-") as directory:
+        client, stopped = _start_fixture(Path(directory))
+        try:
+            _, thread_id, _, _ = _child_stop(client, stopped)
+            response = client.response(
+                client.send(
+                    "next",
+                    {
+                        "threadId": thread_id,
+                        "granularity": "line",
+                        "singleThread": True,
+                    },
+                ),
+                timeout=10,
+            )
+            if response.get("success") is not True:
+                raise DapError(f"child native step failed: {response}")
+        finally:
+            client.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", choices=CRITERIA)
@@ -223,9 +246,14 @@ def main() -> int:
     selected = (args.only,) if args.only else CRITERIA
     results: dict[str, bool] = {criterion: False for criterion in selected}
     try:
-        two_child_happy_path()
-        for criterion in selected:
-            results[criterion] = True
+        legacy = tuple(item for item in selected if item != "AC-MP-06")
+        if legacy:
+            two_child_happy_path()
+            for criterion in legacy:
+                results[criterion] = True
+        if "AC-MP-06" in selected:
+            child_native_step_routes_to_owning_codelldb()
+            results["AC-MP-06"] = True
     except (DapError, TimeoutError, OSError, ValueError) as error:
         print(f"Multiprocess acceptance: {error}", flush=True)
 

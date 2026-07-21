@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -259,6 +260,60 @@ class PythonProcessManager:
 
         with self._lock:
             return [dict(frame) for frame in self._recent_frames.get(process_id, ())]
+
+    def direct_native_step_target(self, thread_id: int) -> str | None:
+        """Return a conservative direct Rust call on the selected Python line."""
+
+        route = self._require_thread(thread_id)
+        with self._lock:
+            frames = tuple(self._recent_frames.get(route.process_id, ()))
+        if not frames:
+            response = self._require_session(route.process_id).transport.request(
+                "stackTrace",
+                {
+                    "threadId": route.thread_id,
+                    "startFrame": 0,
+                    "levels": 1,
+                },
+            )
+            raw_frames = (response.get("body") or {}).get("stackFrames")
+            if not isinstance(raw_frames, list) or not raw_frames:
+                return None
+            raw_top = raw_frames[0]
+            if not isinstance(raw_top, dict):
+                return None
+            source = raw_top.get("source")
+            frames = (
+                {
+                    "path": (
+                        source.get("path")
+                        if isinstance(source, dict)
+                        else None
+                    ),
+                    "line": raw_top.get("line"),
+                },
+            )
+        path = frames[0].get("path")
+        line = frames[0].get("line")
+        if not isinstance(path, str) or not isinstance(line, int) or line <= 0:
+            return None
+        try:
+            source_line = Path(path).read_text(encoding="utf-8").splitlines()[line - 1]
+            parsed = ast.parse(source_line.strip())
+        except (OSError, IndexError, SyntaxError):
+            return None
+        calls = [node for node in ast.walk(parsed) if isinstance(node, ast.Call)]
+        if len(calls) != 1:
+            return None
+        function = calls[0].func
+        name = (
+            function.id
+            if isinstance(function, ast.Name)
+            else function.attr
+            if isinstance(function, ast.Attribute)
+            else None
+        )
+        return name if isinstance(name, str) and name.startswith("rust_") else None
 
     def native_frame_route(self, frame_id: object) -> _FrameRoute | None:
         return self._frame_routes.get(frame_id) if isinstance(frame_id, int) else None

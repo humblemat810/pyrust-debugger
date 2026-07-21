@@ -330,9 +330,10 @@ Rust stops still used the bounded snapshot evaluator.
    CodeLLDB.
 10. In the Rust **Local** scope, change `value` from `20` to `41`. Evaluate
     `value` and confirm it returns `41`.
-11. Select `PyRust: Rust Outer (debugpy)`. Set breakpoints at
-   `research/fixtures/rust_outer/src/embedded.py:4` and
-   `research/fixtures/rust_outer/src/main.rs:8`.
+11. Select `PyRust: Rust Outer (debugpy)`. Set only the Python breakpoint at
+    `research/fixtures/rust_outer/src/embedded.py:4`. Remove or disable the
+    Rust breakpoint at `research/fixtures/rust_outer/src/main.rs:8` so this
+    test proves automatic cross-language Step Into.
 12. Start debugging. At `python_inner`, press **Step Into** on
     `rust_callback()`. The next stop must be `rust_callback` in `main.rs`, and
     `1 + 1` must evaluate to `2`.

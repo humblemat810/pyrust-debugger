@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted and implemented for the supported CPython 3.14 / PyO3 fixtures.
+Implemented as an interim coordinator. It does not satisfy ADR 0011's
+per-frame real-debugger invariant.
 
 ## Context
 
@@ -82,9 +83,15 @@ Limitations:
 
 - a snapshot Python frame nested inside a Rust-owned stop is not a live
   debugpy frame and cannot import, call functions, mutate state, or step;
-- Python-to-Rust Step Into is breakpoint-assisted. The Rust destination must
-  already have a native breakpoint; PyRust does not yet infer a native symbol
-  from an arbitrary Python call or install a temporary function breakpoint;
+- Rust frames are not yet exposed as live CodeLLDB frames inside a
+  debugpy-owned stack;
+- these two limitations mean the mixed debugger is not product-complete under
+  ADR 0011, even though owner-engine routing and handoff tests pass;
+- Python-to-Rust Step Into recognizes a conservative direct call whose target
+  name begins with `rust_`, installs a temporary CodeLLDB function breakpoint,
+  preserves user function breakpoints, and restores them at the next stop;
+- arbitrary Python expressions, aliases, dynamically selected callables, and
+  native targets without a direct `rust_` call name are not yet inferred;
 - Rust-to-Python cross-language stepping still requires continuing to a
   configured Python breakpoint;
 - Process Tree selection is supplemental. The built-in Call Stack is the
@@ -96,7 +103,7 @@ Limitations:
 
 - full Python evaluation at Python-owned stops;
 - Python `stepIn` routing through debugpy;
-- breakpoint-assisted Python-to-Rust Step Into;
+- automatic direct-call Python-to-Rust Step Into;
 - Python -> Rust and Rust -> Python -> Rust handoffs;
 - Rust-outer restart with live debugpy restored;
 - Python threads and child processes with virtualized IDs.

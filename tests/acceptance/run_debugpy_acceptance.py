@@ -422,7 +422,6 @@ def rust_outer_cross_language_step_in() -> None:
         )
         client.event("initialized", timeout=10)
         _set_breakpoint(client, EMBEDDED_PYTHON_SOURCE, 4)
-        _set_breakpoint(client, RUST_OUTER_SOURCE, 8)
         client.response(client.send("configurationDone"), timeout=10)
         client.response(launch, timeout=20)
 

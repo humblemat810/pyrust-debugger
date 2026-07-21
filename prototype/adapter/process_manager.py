@@ -294,18 +294,50 @@ class ProcessManager:
         }
 
     def continue_thread(self, thread_id: int, *, single_thread: bool = False) -> Message:
+        return self._resume_thread(
+            "continue",
+            thread_id,
+            {"singleThread": single_thread or self._force_single_thread},
+        )
+
+    def step_thread(
+        self,
+        command: str,
+        thread_id: int,
+        arguments: Mapping[str, Any],
+    ) -> Message:
+        if command not in {"next", "stepIn", "stepOut"}:
+            raise ChildTransportError(f"unsupported child step command {command!r}")
+        forwarded = {
+            key: value
+            for key, value in arguments.items()
+            if key in {"granularity", "singleThread", "targetId"}
+        }
+        if self._force_single_thread:
+            forwarded["singleThread"] = True
+        return self._resume_thread(command, thread_id, forwarded)
+
+    def pause_thread(self, thread_id: int) -> Message:
         session = self._session_for_thread(thread_id)
         if session is None:
             raise ChildTransportError(f"no child transport owns thread {thread_id}")
-        response = session.transport.request(
-            "continue",
-            # Child coordinator mode exposes one selectable native worker at a
-            # time. Keep sibling workers stopped until the user selects them.
-            {
-                "threadId": thread_id,
-                "singleThread": single_thread or self._force_single_thread,
-            },
+        return session.transport.request(
+            "pause",
+            {"threadId": thread_id},
         )
+
+    def _resume_thread(
+        self,
+        command: str,
+        thread_id: int,
+        arguments: Mapping[str, Any],
+    ) -> Message:
+        session = self._session_for_thread(thread_id)
+        if session is None:
+            raise ChildTransportError(f"no child transport owns thread {thread_id}")
+        forwarded = dict(arguments)
+        forwarded["threadId"] = thread_id
+        response = session.transport.request(command, forwarded)
         # CodeLLDB reports continued asynchronously. Invalidate proxy-owned
         # Python frames as soon as the native resume was accepted so a client
         # cannot query a stale child frame in that small event gap.

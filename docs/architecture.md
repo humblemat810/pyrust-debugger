@@ -286,5 +286,5 @@ Initial settings:
 4. Rust-outer/Python-inner fixture.
 5. Python frame locals through bounded remote primitive reading. Implemented
    for the fixed CPython 3.14.6 Linux fixtures by ADR 0005.
-6. automatic cross-language destination discovery beyond the implemented
-   breakpoint-assisted debugpy Python-stop to CodeLLDB Rust-stop handoff.
+6. cross-language destination discovery beyond the implemented direct
+   `rust_*` call handoff from a debugpy Python stop to a CodeLLDB Rust stop.

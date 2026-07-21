@@ -93,8 +93,8 @@ Use [75-Second Demo Narration](narration.md) if a concise voiceover is useful.
 ## Avoid
 
 - Do not claim arbitrary cross-language stepping. The implemented
-  Python-to-Rust Step Into requires a native breakpoint at the Rust
-  destination.
+  Python-to-Rust Step Into recognizes conservative direct `rust_*` calls and
+  creates a temporary native function breakpoint automatically.
 - Do not enter imports or calls in a synthetic Python frame at a Rust stop;
   use a `(debugpy)` launch configuration for full Python expressions.
 - Keep the recording moving, but the manual process/thread launch now permits a
