@@ -220,6 +220,10 @@ At each required stop:
 6. With `python_inner` selected, evaluate `value + 1` and confirm it is `21`.
 7. Attempt `__import__('os')` and confirm the adapter rejects it without
    ending the session.
+8. While moving between Rust and Python frames in the built-in **Call Stack**,
+   confirm the Debug Console input language changes between Rust and Python.
+   Clicking a same-thread frame in **PyRust Process Tree** must also select the
+   corresponding built-in frame before evaluation.
 
 The shipped launch configurations use CodeLLDB `consoleMode: "evaluate"`, so
 Rust expressions are entered directly in the Debug Console. If an existing

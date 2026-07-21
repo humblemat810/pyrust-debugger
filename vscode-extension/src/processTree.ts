@@ -66,6 +66,109 @@ export interface PyRustDebugRequester {
   customRequest(command: string, args?: unknown): Thenable<unknown>;
 }
 
+export type PyRustFrameLanguage = "python" | "rust" | "asm";
+
+const CALL_STACK_UP_COMMAND = "workbench.action.debug.callStackUp";
+const CALL_STACK_DOWN_COMMAND = "workbench.action.debug.callStackDown";
+const CALL_STACK_CHANGE_TIMEOUT_MS = 750;
+
+export function frameLanguage(
+  frame: PyRustStackFrame,
+): PyRustFrameLanguage | undefined {
+  const source = frame.source?.path ?? frame.source?.name ?? "";
+  const sourceWithoutQuery = source.split(/[?#]/, 1)[0].toLowerCase();
+  if (sourceWithoutQuery.endsWith(".py")) {
+    return "python";
+  }
+  if (sourceWithoutQuery.endsWith(".rs")) {
+    return "rust";
+  }
+  if (
+    frame.source?.origin === "disassembly" ||
+    isPositiveInteger(frame.source?.sourceReference) ||
+    hasInstructionPointer(frame)
+  ) {
+    return "asm";
+  }
+  return undefined;
+}
+
+export function stackNavigationCommand(
+  currentIndex: number,
+  targetIndex: number,
+): string | undefined {
+  if (targetIndex > currentIndex) {
+    return CALL_STACK_DOWN_COMMAND;
+  }
+  if (targetIndex < currentIndex) {
+    return CALL_STACK_UP_COMMAND;
+  }
+  return undefined;
+}
+
+export class PyRustFrameLanguageController implements vscode.Disposable {
+  private version = 0;
+
+  async sync(
+    item: vscode.DebugThread | vscode.DebugStackFrame | undefined =
+      vscode.debug.activeStackItem,
+  ): Promise<void> {
+    const version = ++this.version;
+    if (!isDebugStackFrame(item) || item.session.type !== "pyrust") {
+      return;
+    }
+
+    try {
+      const response = (await item.session.customRequest("stackTrace", {
+        threadId: item.threadId,
+        startFrame: 0,
+        levels: 200,
+      })) as { stackFrames?: unknown };
+      if (version !== this.version) {
+        return;
+      }
+      const frames = Array.isArray(response.stackFrames)
+        ? response.stackFrames.filter(isStackFrame)
+        : [];
+      const frame = frames.find((candidate) => candidate.id === item.frameId);
+      if (!frame?.source?.path) {
+        return;
+      }
+      const frameSourceUri = sourceUri(frame.source.path);
+      const document = vscode.workspace.textDocuments.find(
+        (candidate) => candidate.uri.toString() === frameSourceUri.toString(),
+      );
+      if (document) {
+        await applyFrameDocumentLanguage(document, frame);
+      }
+    } catch {
+      // The frame or its source document may disappear during continue.
+    }
+  }
+
+  clear(): void {
+    this.version += 1;
+  }
+
+  dispose(): void {
+    this.clear();
+  }
+}
+
+export async function applyFrameDocumentLanguage(
+  document: vscode.TextDocument,
+  frame: PyRustStackFrame,
+): Promise<vscode.TextDocument> {
+  const language = frameLanguage(frame);
+  if (
+    (language === "python" || language === "rust") &&
+    document.languageId !== language
+  ) {
+    return vscode.languages.setTextDocumentLanguage(document, language);
+  }
+  return document;
+}
+
 export function rootProcesses(tree: PyRustProcessTree): PyRustProcess[] {
   const known = new Set(tree.processes.map((process) => process.processId));
   return tree.processes.filter(
@@ -492,7 +595,10 @@ export class PyRustFrameHighlighter implements vscode.Disposable {
       if (!sourcePath || !line) {
         return "unavailable";
       }
-      const document = await vscode.workspace.openTextDocument(sourceUri(sourcePath));
+      let document = await vscode.workspace.openTextDocument(
+        sourceUri(sourcePath),
+      );
+      document = await applyFrameDocumentLanguage(document, frame);
       const range = new vscode.Range(line - 1, 0, line - 1, 0);
       const previousEditor = this.editor;
       const editor = await vscode.window.showTextDocument(document, {
@@ -610,10 +716,19 @@ export async function focusFrame(
     return;
   }
   try {
+    const focused = await focusCallStackFrame(node, session);
     const target = await highlighter.open(session, node.frame);
     if (target === "unavailable") {
       void vscode.window.showWarningMessage(
         "This PyRust frame has no source or CodeLLDB disassembly location.",
+      );
+      return;
+    }
+    if (!focused && frameLanguage(node.frame) === "python") {
+      void vscode.window.showWarningMessage(
+        "The Python source was opened, but VS Code could not select this frame "
+          + "across threads. Select it once in the built-in Call Stack before "
+          + "using the Debug Console.",
       );
     }
   } catch (error) {
@@ -621,6 +736,100 @@ export async function focusFrame(
       `Unable to focus this PyRust frame: ${errorMessage(error)}`,
     );
   }
+}
+
+async function focusCallStackFrame(
+  node: Extract<ProcessTreeNode, { kind: "frame" }>,
+  session: vscode.DebugSession,
+): Promise<boolean> {
+  let active = vscode.debug.activeStackItem;
+  if (
+    !isDebugStackFrame(active) ||
+    active.session.id !== session.id ||
+    active.threadId !== node.thread.threadId
+  ) {
+    return false;
+  }
+  if (active.frameId === node.frame.id) {
+    return true;
+  }
+
+  const response = (await session.customRequest("stackTrace", {
+    threadId: node.thread.threadId,
+    startFrame: 0,
+    levels: Math.max(200, node.frameIndex + 1),
+  })) as { stackFrames?: unknown };
+  const frames = Array.isArray(response.stackFrames)
+    ? response.stackFrames.filter(isStackFrame)
+    : [];
+  const targetIndex = frames.findIndex((frame) => frame.id === node.frame.id);
+  if (targetIndex < 0) {
+    return false;
+  }
+
+  for (let attempts = 0; attempts < frames.length; attempts += 1) {
+    active = vscode.debug.activeStackItem;
+    if (
+      !isDebugStackFrame(active) ||
+      active.session.id !== session.id ||
+      active.threadId !== node.thread.threadId
+    ) {
+      return false;
+    }
+    if (active.frameId === node.frame.id) {
+      return true;
+    }
+    const activeFrameId = active.frameId;
+    const currentIndex = frames.findIndex(
+      (frame) => frame.id === activeFrameId,
+    );
+    if (currentIndex < 0) {
+      return false;
+    }
+    const command = stackNavigationCommand(currentIndex, targetIndex);
+    if (!command) {
+      return false;
+    }
+    await executeStackNavigation(command, activeFrameId);
+  }
+  return isActiveStackFrame(node, session);
+}
+
+async function executeStackNavigation(
+  command: string,
+  previousFrameId: number,
+): Promise<void> {
+  let timeout: NodeJS.Timeout | undefined;
+  const changed = new Promise<void>((resolve) => {
+    const subscription = vscode.debug.onDidChangeActiveStackItem((item) => {
+      if (isDebugStackFrame(item) && item.frameId !== previousFrameId) {
+        subscription.dispose();
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        resolve();
+      }
+    });
+    timeout = setTimeout(() => {
+      subscription.dispose();
+      resolve();
+    }, CALL_STACK_CHANGE_TIMEOUT_MS);
+  });
+  await vscode.commands.executeCommand(command);
+  await changed;
+}
+
+function isActiveStackFrame(
+  node: Extract<ProcessTreeNode, { kind: "frame" }>,
+  session: vscode.DebugSession,
+): boolean {
+  const active = vscode.debug.activeStackItem;
+  return Boolean(
+    isDebugStackFrame(active) &&
+      active.session.id === session.id &&
+      active.threadId === node.thread.threadId &&
+      active.frameId === node.frame.id,
+  );
 }
 
 export function sourceUri(sourcePath: string): vscode.Uri {
@@ -643,6 +852,12 @@ function isStackFrame(value: unknown): value is PyRustStackFrame {
       typeof (value as { id?: unknown }).id === "number" &&
       typeof (value as { name?: unknown }).name === "string",
   );
+}
+
+function isDebugStackFrame(
+  value: vscode.DebugThread | vscode.DebugStackFrame | undefined,
+): value is vscode.DebugStackFrame {
+  return Boolean(value && "frameId" in value);
 }
 
 function isDisassembledInstruction(

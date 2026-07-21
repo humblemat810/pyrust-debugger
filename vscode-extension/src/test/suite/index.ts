@@ -1,4 +1,7 @@
-import { runProcessTreeModelTest, runSmokeTest } from "./extension.test";
+import {
+  runProcessTreeModelTest,
+  runSmokeTest,
+} from "./extension.test";
 
 export async function run(): Promise<void> {
   await runProcessTreeModelTest();

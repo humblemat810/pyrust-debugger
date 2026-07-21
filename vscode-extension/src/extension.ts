@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import {
   focusFrame,
   focusThread,
+  PyRustFrameLanguageController,
   PyRustFrameHighlighter,
   PyRustProcessTreeProvider,
 } from "./processTree";
@@ -120,8 +121,10 @@ class PyRustConfigurationProvider
 export function activate(context: vscode.ExtensionContext): void {
   const processTree = new PyRustProcessTreeProvider();
   const frameHighlighter = new PyRustFrameHighlighter();
+  const frameLanguage = new PyRustFrameLanguageController();
   context.subscriptions.push(
     frameHighlighter,
+    frameLanguage,
     vscode.debug.registerDebugAdapterDescriptorFactory(
       "pyrust",
       new PyRustAdapterFactory(),
@@ -156,7 +159,11 @@ export function activate(context: vscode.ExtensionContext): void {
       processTree.clear(session);
       if (session.type === "pyrust") {
         frameHighlighter.clear();
+        frameLanguage.clear();
       }
+    }),
+    vscode.debug.onDidChangeActiveStackItem((item) => {
+      void frameLanguage.sync(item);
     }),
     vscode.debug.registerDebugAdapterTrackerFactory("pyrust", {
       createDebugAdapterTracker(session) {

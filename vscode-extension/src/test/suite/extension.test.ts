@@ -2,7 +2,9 @@ import * as assert from "node:assert";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import {
+  applyFrameDocumentLanguage,
   childProcesses,
+  frameLanguage,
   frameOpenTarget,
   nativeFrameContent,
   nodeBelongsToSnapshot,
@@ -13,6 +15,7 @@ import {
   rootProcesses,
   sameFrameLocation,
   sourceUri,
+  stackNavigationCommand,
   stackFrameNodes,
   type PyRustProcessTree,
 } from "../../processTree";
@@ -317,6 +320,33 @@ export async function runProcessTreeModelTest(): Promise<void> {
     "disassembly",
   );
   assert.strictEqual(firstFrame.frameIndex, 0);
+  assert.strictEqual(frameLanguage(firstFrame.frame), "rust");
+  const pythonFrame = frames[1];
+  assert.strictEqual(pythonFrame.kind, "frame");
+  if (pythonFrame.kind !== "frame") {
+    throw new Error("second stack node was not a frame");
+  }
+  assert.strictEqual(frameLanguage(pythonFrame.frame), "python");
+  assert.strictEqual(
+    frameLanguage({
+      id: 306,
+      name: "native runtime",
+      instructionPointerReference: "0x1234",
+    }),
+    "asm",
+  );
+  assert.strictEqual(stackNavigationCommand(0, 2), "workbench.action.debug.callStackDown");
+  assert.strictEqual(stackNavigationCommand(2, 0), "workbench.action.debug.callStackUp");
+  assert.strictEqual(stackNavigationCommand(1, 1), undefined);
+  let pythonDocument = await vscode.workspace.openTextDocument({
+    language: "rust",
+    content: "value + 1",
+  });
+  pythonDocument = await applyFrameDocumentLanguage(
+    pythonDocument,
+    pythonFrame.frame,
+  );
+  assert.strictEqual(pythonDocument.languageId, "python");
   const snapshotFrame = {
     ...firstFrame,
     sessionId: "session-1",
