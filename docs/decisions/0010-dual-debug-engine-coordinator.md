@@ -43,8 +43,17 @@ Execution commands route by thread ownership:
 
 - CodeLLDB owns native `continue`, `next`, `stepIn`, `stepOut`, and `pause`.
 - debugpy owns the same commands for a virtual Python thread.
-- a Python resume immediately releases its debugpy stop lease; the next
+- debugpy resume and step requests are tracked asynchronously. CodeLLDB may
+  stop at a Rust breakpoint before debugpy can answer the request, so PyRust
+  must not block the native stop while waiting for that answer.
+- debugpy's `continued` event releases the Python stop lease; the next
   CodeLLDB `stopped` event acquires the native lease.
+
+Restart is also coordinated. PyRust caches the transformed CodeLLDB launch
+arguments, retires the old debugpy process routes, and supplies those cached
+arguments in the downstream DAP `restart` request. Forwarding VS Code's empty
+restart arguments directly is not sufficient for the supported CodeLLDB
+version.
 
 VS Code may omit `frameId` from Debug Console evaluation. PyRust records the
 most recent built-in Call Stack frame for which VS Code requested `scopes`;
@@ -58,8 +67,13 @@ Positive:
 - selecting a live Python frame routes the Debug Console and variables to
   debugpy;
 - selecting a Rust frame routes them to CodeLLDB;
+- live Python and Rust owner frames support DAP variable assignment through
+  their owning engines;
 - Python stepping works at a Python-owned stop without switching VS Code
   sessions;
+- Step Into from a live Python call site can hand off to a Rust breakpoint in
+  the called native function;
+- restart preserves the Python bootstrap and returns to live debugpy stops;
 - breakpoint edits propagate to attached debugpy processes as well as future
   processes;
 - process and thread identity remains PID-scoped across both engines.
@@ -68,8 +82,11 @@ Limitations:
 
 - a snapshot Python frame nested inside a Rust-owned stop is not a live
   debugpy frame and cannot import, call functions, mutate state, or step;
-- cross-language step-through remains unsupported: users continue from a
-  Python stop to a later Rust stop or vice versa;
+- Python-to-Rust Step Into is breakpoint-assisted. The Rust destination must
+  already have a native breakpoint; PyRust does not yet infer a native symbol
+  from an arbitrary Python call or install a temporary function breakpoint;
+- Rust-to-Python cross-language stepping still requires continuing to a
+  configured Python breakpoint;
 - Process Tree selection is supplemental. The built-in Call Stack is the
   authoritative VS Code selection for Debug Console routing.
 
@@ -79,5 +96,7 @@ Limitations:
 
 - full Python evaluation at Python-owned stops;
 - Python `stepIn` routing through debugpy;
+- breakpoint-assisted Python-to-Rust Step Into;
 - Python -> Rust and Rust -> Python -> Rust handoffs;
+- Rust-outer restart with live debugpy restored;
 - Python threads and child processes with virtualized IDs.

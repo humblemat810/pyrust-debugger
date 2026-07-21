@@ -41,6 +41,10 @@ CRITERIA = (
     "AC-DP-04",
     "AC-DP-05",
     "AC-DP-06",
+    "AC-DP-07",
+    "AC-DP-08",
+    "AC-DP-09",
+    "AC-DP-10",
 )
 
 
@@ -103,6 +107,18 @@ def _evaluate(
         {"expression": expression, "frameId": frame_id, "context": context},
     )
     return str(client.response(request, timeout=10).get("body", {}).get("result"))
+
+
+def _python_libdir() -> str:
+    return subprocess.check_output(
+        [
+            str(PYTHON),
+            "-c",
+            "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))",
+        ],
+        text=True,
+        timeout=5,
+    ).strip()
 
 
 def _python_outer_stop() -> tuple[DapClient, dict[str, Any]]:
@@ -308,15 +324,6 @@ def python_processes() -> None:
 
 
 def rust_outer_python_stop() -> None:
-    python_libdir = subprocess.check_output(
-        [
-            str(PYTHON),
-            "-c",
-            "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))",
-        ],
-        text=True,
-        timeout=5,
-    ).strip()
     client = DapClient(proxy_command())
     try:
         initialize(client)
@@ -324,7 +331,7 @@ def rust_outer_python_stop() -> None:
             client,
             program=RUST_OUTER_BINARY,
             args=[],
-            env={"LD_LIBRARY_PATH": python_libdir},
+            env={"LD_LIBRARY_PATH": _python_libdir()},
         )
         client.event("initialized", timeout=10)
         _set_breakpoint(client, EMBEDDED_PYTHON_SOURCE, 4)
@@ -365,6 +372,179 @@ def rust_outer_python_stop() -> None:
         client.close()
 
 
+def rust_outer_restart() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=RUST_OUTER_BINARY,
+            args=[],
+            env={"LD_LIBRARY_PATH": _python_libdir()},
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, EMBEDDED_PYTHON_SOURCE, 4)
+        _set_breakpoint(client, RUST_OUTER_SOURCE, 8)
+        configured = client.send("configurationDone")
+        client.response(configured, timeout=10)
+        client.response(launch, timeout=20)
+
+        for restart in (False, True):
+            if restart:
+                client.response(client.send("restart", {}), timeout=30)
+            stopped = client.event("stopped", timeout=30)
+            thread_id = stopped.get("body", {}).get("threadId")
+            if not isinstance(thread_id, int):
+                raise DapError(f"restart Python stop has no thread ID: {stopped}")
+            frame = _stack(client, thread_id)[0]
+            frame_id = frame.get("id")
+            if (
+                frame.get("name") != "python_inner"
+                or not isinstance(frame_id, int)
+                or _evaluate(client, frame_id, "value + 1") != "21"
+            ):
+                raise DapError(
+                    f"Rust-outer restart did not restore live debugpy: {frame}"
+                )
+    finally:
+        client.close()
+
+
+def rust_outer_cross_language_step_in() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=RUST_OUTER_BINARY,
+            args=[],
+            env={"LD_LIBRARY_PATH": _python_libdir()},
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, EMBEDDED_PYTHON_SOURCE, 4)
+        _set_breakpoint(client, RUST_OUTER_SOURCE, 8)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        python_stop = client.event("stopped", timeout=30)
+        python_thread = python_stop.get("body", {}).get("threadId")
+        if not isinstance(python_thread, int):
+            raise DapError(f"cross-step Python stop has no thread ID: {python_stop}")
+        client.response(
+            client.send(
+                "stepIn",
+                {"threadId": python_thread, "granularity": "line"},
+            ),
+            timeout=10,
+        )
+
+        rust_stop = client.event("stopped", timeout=30)
+        rust_thread = rust_stop.get("body", {}).get("threadId")
+        if not isinstance(rust_thread, int):
+            raise DapError(f"cross-step Rust stop has no thread ID: {rust_stop}")
+        frame = _stack(client, rust_thread)[0]
+        frame_id = frame.get("id")
+        if (
+            str(frame.get("name", "")).rsplit("::", 1)[-1] != "rust_callback"
+            or not isinstance(frame_id, int)
+            or _evaluate(client, frame_id, "1 + 1") != "2"
+        ):
+            raise DapError(f"Python-to-Rust step handoff failed: {frame}")
+    finally:
+        client.close()
+
+
+def live_python_assignment() -> None:
+    client, stopped = _python_outer_stop()
+    try:
+        thread_id = stopped.get("body", {}).get("threadId")
+        if not isinstance(thread_id, int):
+            raise DapError(f"Python assignment stop has no thread ID: {stopped}")
+        frame = _stack(client, thread_id)[0]
+        frame_id = frame.get("id")
+        if not isinstance(frame_id, int):
+            raise DapError(f"Python assignment frame has no ID: {frame}")
+        scopes = client.response(
+            client.send("scopes", {"frameId": frame_id}),
+            timeout=10,
+        ).get("body", {}).get("scopes")
+        if not isinstance(scopes, list) or not scopes:
+            raise DapError(f"Python assignment scopes were malformed: {scopes}")
+        reference = scopes[0].get("variablesReference")
+        if not isinstance(reference, int) or reference <= 0:
+            raise DapError(f"Python locals scope has no reference: {scopes[0]}")
+        response = client.response(
+            client.send(
+                "setVariable",
+                {
+                    "variablesReference": reference,
+                    "name": "value",
+                    "value": "41",
+                },
+            ),
+            timeout=10,
+        )
+        if response.get("body", {}).get("value") != "41":
+            raise DapError(f"debugpy did not assign the Python local: {response}")
+        if _evaluate(client, frame_id, "value") != "41":
+            raise DapError("the assigned Python local was not visible to evaluation")
+    finally:
+        client.close()
+
+
+def live_rust_assignment() -> None:
+    client, python_thread = full_python_evaluation()
+    try:
+        client.response(
+            client.send("continue", {"threadId": python_thread}),
+            timeout=10,
+        )
+        stopped = client.event("stopped", timeout=30)
+        thread_id = stopped.get("body", {}).get("threadId")
+        if not isinstance(thread_id, int):
+            raise DapError(f"Rust assignment stop has no thread ID: {stopped}")
+        frame = _stack(client, thread_id)[0]
+        frame_id = frame.get("id")
+        if not isinstance(frame_id, int):
+            raise DapError(f"Rust assignment frame has no ID: {frame}")
+        scopes = client.response(
+            client.send("scopes", {"frameId": frame_id}),
+            timeout=10,
+        ).get("body", {}).get("scopes")
+        local_scope = next(
+            (
+                scope
+                for scope in scopes
+                if isinstance(scope, dict) and scope.get("name") == "Local"
+            ),
+            None,
+        ) if isinstance(scopes, list) else None
+        reference = (
+            local_scope.get("variablesReference")
+            if isinstance(local_scope, dict)
+            else None
+        )
+        if not isinstance(reference, int) or reference <= 0:
+            raise DapError(f"Rust local scope has no reference: {scopes}")
+        response = client.response(
+            client.send(
+                "setVariable",
+                {
+                    "variablesReference": reference,
+                    "name": "value",
+                    "value": "41",
+                },
+            ),
+            timeout=10,
+        )
+        if response.get("body", {}).get("value") != "41":
+            raise DapError(f"CodeLLDB did not assign the Rust local: {response}")
+        if _evaluate(client, frame_id, "value") != "41":
+            raise DapError("the assigned Rust local was not visible to evaluation")
+    finally:
+        client.close()
+
+
 def main() -> int:
     cases = (
         ("AC-DP-01", lambda: full_python_evaluation()[0].close()),
@@ -373,6 +553,10 @@ def main() -> int:
         ("AC-DP-04", python_processes),
         ("AC-DP-05", rust_outer_python_stop),
         ("AC-DP-06", python_step_in),
+        ("AC-DP-07", rust_outer_restart),
+        ("AC-DP-08", rust_outer_cross_language_step_in),
+        ("AC-DP-09", live_python_assignment),
+        ("AC-DP-10", live_rust_assignment),
     )
     results: dict[str, bool] = {}
     for criterion, case in cases:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from copy import deepcopy
 import importlib
 import json
 import os
@@ -73,6 +74,7 @@ class MixedStackHooks(ProxyHooks):
         self._python_debug_registry: TemporaryDirectory[str] | None = None
         self._child_only_process: subprocess.Popen[bytes] | None = None
         self._child_only_mode = False
+        self._restart_arguments: dict[str, Any] | None = None
 
     def on_launch(
         self,
@@ -133,6 +135,7 @@ class MixedStackHooks(ProxyHooks):
             self._console_frame_id = None
             self._diagnosed_epochs.clear()
             self._child_only_mode = process_mode == "children"
+            self._restart_arguments = None
             if process_metadata is not None:
                 context.state.set_default_process_metadata(*process_metadata)
             if self._process_manager is not None:
@@ -196,6 +199,7 @@ class MixedStackHooks(ProxyHooks):
             if self._child_only_mode:
                 context.send_event("initialized")
                 return LocalResponse(body={})
+            self._restart_arguments = deepcopy(arguments)
         outgoing["arguments"] = arguments
         return outgoing
 
@@ -328,6 +332,51 @@ class MixedStackHooks(ProxyHooks):
             return LocalResponse(success=False, message=str(error))
         return LocalResponse(body=dict(response.get("body") or {}))
 
+    def on_restart(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse:
+        del request
+        with self._lock:
+            if self._child_only_mode:
+                return LocalResponse(
+                    success=False,
+                    message="restart is not supported for child-only process mode",
+                )
+            restart_arguments = (
+                deepcopy(self._restart_arguments)
+                if self._restart_arguments is not None
+                else None
+            )
+            self._stopped_thread_id = None
+            self._console_frame_id = None
+        if restart_arguments is None:
+            return LocalResponse(
+                success=False,
+                message="restart is unavailable before a successful launch",
+            )
+        if self._python_manager is not None:
+            self._python_manager.prepare_restart()
+        try:
+            response = context.request_downstream(
+                "restart",
+                {"arguments": restart_arguments},
+                timeout=30,
+            )
+        except Exception as error:
+            return LocalResponse(
+                success=False,
+                message=f"native restart failed: {error}",
+            )
+        if response.get("success") is not True:
+            return LocalResponse(
+                success=False,
+                body=response.get("body"),
+                message=str(response.get("message", "native restart failed")),
+            )
+        return LocalResponse(body=dict(response.get("body") or {}))
+
     def on_set_breakpoints(
         self,
         request: Message,
@@ -374,6 +423,66 @@ class MixedStackHooks(ProxyHooks):
                         for _ in range(count)
                     ]
                 }
+            )
+        return None
+
+    def on_set_variable(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        reference = (request.get("arguments") or {}).get("variablesReference")
+        python_manager = self._python_manager
+        if (
+            python_manager is not None
+            and python_manager.variable_route(reference) is not None
+        ):
+            assert isinstance(reference, int)
+            try:
+                response = python_manager.set_variable(
+                    reference,
+                    request.get("arguments") or {},
+                )
+            except PythonTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
+        if context.synthetic_frames.get(reference) is not None:
+            return LocalResponse(
+                success=False,
+                message=(
+                    "Python locals inside a Rust-owned stop are read-only "
+                    "snapshots; live assignment requires the CPython bridge"
+                ),
+            )
+        return None
+
+    def on_set_expression(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        frame_id = (request.get("arguments") or {}).get("frameId")
+        python_manager = self._python_manager
+        if (
+            python_manager is not None
+            and python_manager.native_frame_route(frame_id) is not None
+        ):
+            assert isinstance(frame_id, int)
+            try:
+                response = python_manager.set_expression(
+                    frame_id,
+                    request.get("arguments") or {},
+                )
+            except PythonTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
+        if self._current_python_frame_id(frame_id, context) is not None:
+            return LocalResponse(
+                success=False,
+                message=(
+                    "Python frames inside a Rust-owned stop are read-only "
+                    "snapshots; live assignment requires the CPython bridge"
+                ),
             )
         return None
 

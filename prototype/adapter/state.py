@@ -578,6 +578,7 @@ class ProxySessionState:
         event_process_id = (
             (event.get("body") or {}).get("systemProcessId") if event else None
         )
+        process_still_stopped = False
         with self._lock:
             thread_id = (event.get("body") or {}).get("threadId") if event else None
             process_id = (
@@ -613,10 +614,11 @@ class ProxySessionState:
                     stopped_thread_ids=stopped_thread_ids,
                     all_threads_stopped=False,
                 )
+                process_still_stopped = bool(stopped_thread_ids)
             self._is_stopped = any(
                 snapshot.is_stopped for snapshot in self._processes.values()
             )
-        if process_id is not None:
+        if process_id is not None and not process_still_stopped:
             try:
                 self.coordinator.release_stop(process_id, owner)
             except CoordinationError:

@@ -317,21 +317,39 @@ Rust stops still used the bounded snapshot evaluator.
    Call Stack top frame is Python.
 4. Run `import sys` in the Debug Console. It must succeed at this Python-owned
    stop.
-5. Use **Step Into** twice. The built-in Call Stack must stop first at
+5. In **Variables**, change Python local `value` from `20` to `41`. Evaluate
+   `value` and confirm it returns `41`. Change it back to `20` before
+   continuing.
+6. Use **Step Into** twice. The built-in Call Stack must stop first at
    `python_outer` line 11, then at `python_inner` line 5.
-6. Continue to `rust_inner`. Confirm the mixed stack begins with
+7. Continue to `rust_inner`. Confirm the mixed stack begins with
    `rust_inner`, `rust_outer`, `python_inner`, `python_outer`.
-7. Select `python_inner` in the built-in Call Stack and evaluate `value + 1`.
+8. Select `python_inner` in the built-in Call Stack and evaluate `value + 1`.
    It must return `21` from the snapshot evaluator.
-8. Select `rust_inner` and evaluate `value * 2`. It must return `40` through
+9. Select `rust_inner` and evaluate `value * 2`. It must return `40` through
    CodeLLDB.
+10. In the Rust **Local** scope, change `value` from `20` to `41`. Evaluate
+    `value` and confirm it returns `41`.
+11. Select `PyRust: Rust Outer (debugpy)`. Set breakpoints at
+   `research/fixtures/rust_outer/src/embedded.py:4` and
+   `research/fixtures/rust_outer/src/main.rs:8`.
+12. Start debugging. At `python_inner`, press **Step Into** on
+    `rust_callback()`. The next stop must be `rust_callback` in `main.rs`, and
+    `1 + 1` must evaluate to `2`.
+13. Click **Restart** while stopped. The session must relaunch, stop again in
+    `python_inner`, and evaluate `value + 1` as `21`.
+
+Current boundary: when CodeLLDB owns the stop, the inserted Python frames are
+read-only snapshots. They show current bounded primitive locals, but editing
+them is not expected to work until ADR 0011's CPython bridge is implemented.
 
 Record:
 
 ```text
 HC-CV-06 PASS
-Evidence: Python stepIn stops remained Python/debugpy-owned; the subsequent
-Rust stop restored the mixed stack and routed expressions by selected frame.
+Evidence: Python stepIn stops remained Python/debugpy-owned; a breakpoint-
+assisted Step Into handed ownership to CodeLLDB at rust_callback; restart
+restored the live debugpy Python stop.
 ```
 
 ## Completion

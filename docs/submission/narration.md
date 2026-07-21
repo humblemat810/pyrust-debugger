@@ -37,8 +37,10 @@ Show and expand **PyRust Process Tree**.
 ## 65-75 Seconds: Interaction And Limits
 
 > Clicking a Process Tree frame navigates to its source. PyRust currently
-> supports Rust breakpoints and read-only Python recovery on Linux with CPython
-> 3.14. Python breakpoints and cross-language stepping are future work.
+> supports Rust breakpoints, live debugpy Python stops, and read-only Python
+> recovery inside Rust-owned stops on Linux with CPython 3.14. A Python Step
+> Into can hand off to a configured Rust breakpoint; automatic cross-language
+> destination discovery is future work.
 
 Click `rust_inner` in the Process Tree, briefly show the amber navigation
 decoration, then end the recording.

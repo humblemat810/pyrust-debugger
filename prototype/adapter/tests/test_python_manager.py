@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
 from typing import Any, Callable, Mapping, Sequence
 import unittest
 
@@ -89,6 +90,15 @@ class FakeDebugpyTransport:
                     ]
                 },
             }
+        if command in {"setVariable", "setExpression"}:
+            return {
+                "success": True,
+                "body": {
+                    "value": arguments.get("value", ""),
+                    "type": "int",
+                    "variablesReference": 0,
+                },
+            }
         if command == "evaluate":
             return {
                 "success": True,
@@ -103,7 +113,7 @@ class FakeDebugpyTransport:
                 "success": True,
                 "body": {"breakpoints": [{"verified": True}]},
             }
-        if command == "pause":
+        if command in {"continue", "next", "pause", "stepIn", "stepOut"}:
             return {"success": True, "body": {}}
         raise AssertionError(f"unexpected fake request {command!r}")
 
@@ -112,6 +122,16 @@ class FakeDebugpyTransport:
         command: str,
         arguments: Mapping[str, Any] | None = None,
     ) -> None:
+        self.calls.append((command, dict(arguments or {})))
+
+    def request_async(
+        self,
+        command: str,
+        arguments: Mapping[str, Any] | None = None,
+        *,
+        on_error: Callable[[Exception], None],
+    ) -> None:
+        del on_error
         self.calls.append((command, dict(arguments or {})))
 
     def close(self) -> None:
@@ -208,12 +228,59 @@ class PythonProcessManagerTests(unittest.TestCase):
                 "value",
             )
             self.assertEqual(
+                manager.set_variable(
+                    reference,
+                    {"name": "value", "value": "41"},
+                )["body"]["value"],
+                "41",
+            )
+            self.assertEqual(
+                created[0].calls[-1],
+                (
+                    "setVariable",
+                    {
+                        "variablesReference": 31,
+                        "name": "value",
+                        "value": "41",
+                    },
+                ),
+            )
+            self.assertEqual(
+                manager.set_expression(
+                    frame_id,
+                    {"expression": "value", "value": "42"},
+                )["body"]["value"],
+                "42",
+            )
+            self.assertEqual(
+                created[0].calls[-1],
+                (
+                    "setExpression",
+                    {
+                        "expression": "value",
+                        "value": "42",
+                        "frameId": 11,
+                    },
+                ),
+            )
+            self.assertEqual(
                 manager.evaluate(frame_id, {"expression": "__import__('sys')"})[
                     "body"
                 ]["result"],
                 "(3, 14)",
             )
 
+            created[0].event_handler(
+                {
+                    "type": "event",
+                    "event": "stopped",
+                    "body": {
+                        "threadId": 702,
+                        "reason": "pause",
+                        "allThreadsStopped": True,
+                    },
+                }
+            )
             manager.pause_thread(virtual_thread_id)
             self.assertEqual(
                 created[0].calls[-1],
@@ -235,6 +302,17 @@ class PythonProcessManagerTests(unittest.TestCase):
                     },
                 ),
             )
+            created[0].event_handler(
+                {
+                    "type": "event",
+                    "event": "continued",
+                    "body": {
+                        "threadId": 701,
+                        "allThreadsContinued": False,
+                    },
+                }
+            )
+            self.assertEqual(state.coordinator.execution_owner(700), "python")
             manager.continue_thread(virtual_thread_id)
             self.assertEqual(
                 created[0].calls[-1],
@@ -242,6 +320,16 @@ class PythonProcessManagerTests(unittest.TestCase):
                     "continue",
                     {"threadId": 701, "singleThread": False},
                 ),
+            )
+            created[0].event_handler(
+                {
+                    "type": "event",
+                    "event": "continued",
+                    "body": {
+                        "threadId": 701,
+                        "allThreadsContinued": True,
+                    },
+                }
             )
             self.assertIsNone(state.coordinator.execution_owner(700))
             self.assertIsNone(manager.native_frame_route(frame_id))
@@ -255,12 +343,82 @@ class PythonProcessManagerTests(unittest.TestCase):
                     {
                         "threadId": virtual_thread_id,
                         "allThreadsContinued": True,
+                        "systemProcessId": 700,
                     },
                 ),
                 emitted,
             )
             manager.close()
             self.assertTrue(created[0].closed)
+
+    def test_breakpoint_added_during_attach_reaches_new_session(self) -> None:
+        state = ProxySessionState()
+        attach_started = Event()
+        finish_attach = Event()
+        created: list[FakeDebugpyTransport] = []
+
+        class BlockingTransport(FakeDebugpyTransport):
+            def start(
+                self,
+                *,
+                host: str,
+                port: int,
+                breakpoints: Sequence[Mapping[str, Any]],
+            ) -> None:
+                super().start(host=host, port=port, breakpoints=breakpoints)
+                attach_started.set()
+                finish_attach.wait(2)
+
+        with TemporaryDirectory() as directory:
+            registry = Path(directory)
+
+            def factory(
+                event_handler: Callable[[Message], None],
+            ) -> FakeDebugpyTransport:
+                transport = BlockingTransport(event_handler)
+                created.append(transport)
+                return transport
+
+            manager = PythonProcessManager(
+                registry_path=registry,
+                state=state,
+                emit_event=lambda _event, _body: None,
+                transport_factory=factory,
+            )
+            worker = Thread(
+                target=manager._start_process,
+                args=(
+                    {
+                        "pid": 700,
+                        "parentPid": 600,
+                        "host": "127.0.0.1",
+                        "port": 5678,
+                    },
+                ),
+            )
+            worker.start()
+            self.assertTrue(attach_started.wait(1))
+            manager.add_breakpoints(
+                {
+                    "source": {"path": "/workspace/worker.py"},
+                    "breakpoints": [{"line": 24}],
+                }
+            )
+            finish_attach.set()
+            worker.join(2)
+            self.assertFalse(worker.is_alive())
+            self.assertIn(
+                (
+                    "setBreakpoints",
+                    {
+                        "source": {"path": "/workspace/worker.py"},
+                        "breakpoints": [{"line": 24}],
+                        "sourceModified": False,
+                    },
+                ),
+                created[0].calls,
+            )
+            manager.close()
 
     def test_breakpoints_update_an_attached_debugpy_process(self) -> None:
         state = ProxySessionState()

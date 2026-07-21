@@ -19,12 +19,16 @@ class PythonTransportError(RuntimeError):
     """A private debugpy adapter session could not complete an operation."""
 
 
+AsyncErrorHandler = Callable[[PythonTransportError], None]
+
+
 @dataclass
 class _PendingRequest:
     command: str
     complete: Event
     response: Message | None = None
     error: BaseException | None = None
+    async_error_handler: AsyncErrorHandler | None = None
 
 
 class DebugpyTransport:
@@ -149,6 +153,38 @@ class DebugpyTransport:
         except OSError as error:
             raise PythonTransportError(f"debugpy write failed: {error}") from error
 
+    def request_async(
+        self,
+        command: str,
+        arguments: Mapping[str, Any] | None = None,
+        *,
+        on_error: AsyncErrorHandler,
+    ) -> None:
+        """Send a tracked request without blocking a second debug engine."""
+
+        writer = self._writer
+        if writer is None or self._stop.is_set():
+            raise PythonTransportError("debugpy transport is unavailable")
+        with self._sequence_lock:
+            sequence = self._sequence
+            self._sequence += 1
+        pending = _PendingRequest(
+            command=command,
+            complete=Event(),
+            async_error_handler=on_error,
+        )
+        with self._pending_lock:
+            self._pending[sequence] = pending
+        request: Message = {"seq": sequence, "type": "request", "command": command}
+        if arguments is not None:
+            request["arguments"] = dict(arguments)
+        try:
+            writer.write_message(request)
+        except OSError as error:
+            with self._pending_lock:
+                self._pending.pop(sequence, None)
+            raise PythonTransportError(f"debugpy write failed: {error}") from error
+
     def close(self) -> None:
         self._stop.set()
         stream = self._stream
@@ -225,6 +261,21 @@ class DebugpyTransport:
                         with self._pending_lock:
                             pending = self._pending.get(sequence)
                         if pending is not None:
+                            if pending.async_error_handler is not None:
+                                with self._pending_lock:
+                                    self._pending.pop(sequence, None)
+                                if message.get("success") is not True:
+                                    pending.async_error_handler(
+                                        PythonTransportError(
+                                            str(
+                                                message.get(
+                                                    "message",
+                                                    f"debugpy {pending.command} failed",
+                                                )
+                                            )
+                                        )
+                                    )
+                                continue
                             pending.response = message
                             pending.complete.set()
                     continue
@@ -241,5 +292,8 @@ class DebugpyTransport:
             pending = list(self._pending.values())
             self._pending.clear()
         for request in pending:
+            if request.async_error_handler is not None:
+                request.async_error_handler(PythonTransportError(str(error)))
+                continue
             request.error = error
             request.complete.set()

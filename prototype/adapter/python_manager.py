@@ -136,6 +136,26 @@ class PythonProcessManager:
         with self._lock:
             self._configuration_done = True
 
+    def prepare_restart(self) -> None:
+        """Retire old debugpy identities before CodeLLDB launches a new PID."""
+
+        with self._lock:
+            sessions = tuple(self._sessions.values())
+            process_ids = tuple(self._sessions)
+            self._sessions.clear()
+            self._retired_process_ids.update(process_ids)
+            self._thread_routes.clear()
+            self._thread_keys.clear()
+            self._frame_routes.clear()
+            self._frame_keys.clear()
+            self._variable_routes.clear()
+            self._variable_keys.clear()
+            self._recent_frames.clear()
+        for session in sessions:
+            session.transport.close()
+        for process_id in process_ids:
+            self._state.remove_process(process_id)
+
     def owns_thread(self, thread_id: object) -> bool:
         return isinstance(thread_id, int) and thread_id in self._thread_routes
 
@@ -322,6 +342,58 @@ class PythonProcessManager:
             ),
         }
 
+    def set_variable(
+        self,
+        variables_reference: int,
+        arguments: Mapping[str, Any],
+    ) -> Message:
+        route = self._require_variable(variables_reference)
+        response = self._require_session(route.process_id).transport.request(
+            "setVariable",
+            {
+                "variablesReference": route.variables_reference,
+                "name": arguments.get("name", ""),
+                "value": arguments.get("value", ""),
+            },
+        )
+        body = response.get("body")
+        if not isinstance(body, dict):
+            return {"success": True, "body": {}}
+        return {
+            "success": True,
+            "body": self._translate_variables_reference(
+                route.process_id,
+                route.thread_id,
+                body,
+            ),
+        }
+
+    def set_expression(
+        self,
+        frame_id: int,
+        arguments: Mapping[str, Any],
+    ) -> Message:
+        route = self._require_frame(frame_id)
+        response = self._require_session(route.process_id).transport.request(
+            "setExpression",
+            {
+                "expression": arguments.get("expression", ""),
+                "value": arguments.get("value", ""),
+                "frameId": route.frame_id,
+            },
+        )
+        body = response.get("body")
+        if not isinstance(body, dict):
+            return {"success": True, "body": {}}
+        return {
+            "success": True,
+            "body": self._translate_variables_reference(
+                route.process_id,
+                route.thread_id,
+                body,
+            ),
+        }
+
     def continue_thread(self, thread_id: int, *, single_thread: bool = False) -> Message:
         return self._resume_thread(
             "continue",
@@ -361,16 +433,26 @@ class PythonProcessManager:
         route = self._require_thread(thread_id)
         forwarded = dict(arguments)
         forwarded["threadId"] = route.thread_id
-        self._require_session(route.process_id).transport.notify(command, forwarded)
+        self._require_session(route.process_id).transport.request_async(
+            command,
+            forwarded,
+            on_error=lambda error: self._emit_event(
+                "output",
+                {
+                    "category": "stderr",
+                    "output": (
+                        f"PyRust debugpy {command} failed for process "
+                        f"{route.process_id}: {error}\n"
+                    ),
+                },
+            ),
+        )
         body = {
             "threadId": thread_id,
             "allThreadsContinued": not bool(forwarded.get("singleThread")),
         }
-        # A Rust breakpoint may stop the target before debugpy answers this
-        # request. The write itself is enough to release Python ownership.
-        self._state.on_continued({"body": body}, owner="python")
-        self._clear_process_routes(route.process_id)
-        self._emit_event("continued", body)
+        # debugpy's continued event is the source of truth for releasing the
+        # process lease and invalidating only the routes that actually resumed.
         return {"success": True, "body": body}
 
     def close(self) -> None:
@@ -448,6 +530,10 @@ class PythonProcessManager:
                     transport.close()
                     return
                 self._sessions[process_id] = session
+                current_breakpoints = tuple(self._breakpoints)
+            for breakpoint in current_breakpoints:
+                if breakpoint not in breakpoints:
+                    transport.request("setBreakpoints", breakpoint)
             for event in startup_events:
                 self._handle_event(process_id, event)
             self.refresh_threads()
@@ -513,7 +599,10 @@ class PythonProcessManager:
         elif name == "continued":
             if was_python_owner:
                 self._state.on_continued({"body": body}, owner="python")
-            self._clear_process_routes(process_id)
+            if body.get("allThreadsContinued") is False and raw_thread_id is not None:
+                self._clear_thread_routes(process_id, raw_thread_id)
+            else:
+                self._clear_process_routes(process_id)
         elif name in {"exited", "terminated"}:
             self._clear_process_routes(process_id)
             with self._lock:
@@ -647,6 +736,29 @@ class PythonProcessManager:
                 key: virtual
                 for key, virtual in self._variable_keys.items()
                 if key[0] != process_id
+            }
+
+    def _clear_thread_routes(self, process_id: int, thread_id: int) -> None:
+        with self._lock:
+            self._frame_routes = {
+                virtual: route
+                for virtual, route in self._frame_routes.items()
+                if (route.process_id, route.thread_id) != (process_id, thread_id)
+            }
+            self._frame_keys = {
+                key: virtual
+                for key, virtual in self._frame_keys.items()
+                if key[:2] != (process_id, thread_id)
+            }
+            self._variable_routes = {
+                virtual: route
+                for virtual, route in self._variable_routes.items()
+                if (route.process_id, route.thread_id) != (process_id, thread_id)
+            }
+            self._variable_keys = {
+                key: virtual
+                for key, virtual in self._variable_keys.items()
+                if key[:2] != (process_id, thread_id)
             }
 
     def _record_recent_frames(

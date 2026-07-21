@@ -14,6 +14,7 @@
 - [ADR 0008: Process and thread mode contract](decisions/0008-process-thread-mode-contract.md)
 - [ADR 0009: debugpy for Python-owned stops](decisions/0009-debugpy-python-owned-stops.md)
 - [ADR 0010: Dual-debug-engine coordinator](decisions/0010-dual-debug-engine-coordinator.md)
+- [ADR 0011: Fully live foreign-language frames](decisions/0011-fully-live-foreign-language-frames.md)
 - [Feasibility summary](feasibility.md)
 
 ## Research reports
@@ -76,6 +77,10 @@ ADR 0010 defines the dual-debug-engine coordinator. One VS Code-facing DAP
 session routes native frames and commands to CodeLLDB, live Python frames and
 commands to debugpy, and Rust-stop Python frames to the bounded snapshot
 reader.
+
+ADR 0011 defines the remaining fully live foreign-frame requirement. Mutation
+works through the owning engine, but writable Python frames inside a
+Rust-owned stop still require the proposed in-target CPython bridge.
 
 ADR 0006 implements the first process-tree coordinator. Two-worker
 Python-thread and Rust-thread fixtures pass. Python-parent and Rust-parent

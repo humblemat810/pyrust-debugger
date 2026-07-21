@@ -112,7 +112,28 @@ class ProxyHooks:
     ) -> LocalResponse | None:
         return None
 
+    def on_restart(
+        self,
+        request: Message,
+        context: "ProxyContext",
+    ) -> LocalResponse | None:
+        return None
+
     def on_set_breakpoints(
+        self,
+        request: Message,
+        context: "ProxyContext",
+    ) -> LocalResponse | None:
+        return None
+
+    def on_set_variable(
+        self,
+        request: Message,
+        context: "ProxyContext",
+    ) -> LocalResponse | None:
+        return None
+
+    def on_set_expression(
         self,
         request: Message,
         context: "ProxyContext",
@@ -226,8 +247,11 @@ class DapProxy:
             "evaluate",
             "next",
             "pause",
+            "restart",
             "scopes",
             "setBreakpoints",
+            "setExpression",
+            "setVariable",
             "stackTrace",
             "stepIn",
             "stepOut",
@@ -595,8 +619,14 @@ class DapProxy:
                 response = self._hooks.on_step_request(request, self.context)
             elif command == "pause":
                 response = self._hooks.on_pause_request(request, self.context)
+            elif command == "restart":
+                response = self._hooks.on_restart(request, self.context)
             elif command == "setBreakpoints":
                 response = self._hooks.on_set_breakpoints(request, self.context)
+            elif command == "setVariable":
+                response = self._hooks.on_set_variable(request, self.context)
+            elif command == "setExpression":
+                response = self._hooks.on_set_expression(request, self.context)
             elif command == "configurationDone":
                 response = self._hooks.on_configuration_done(request, self.context)
             elif command == "pyrust/processTree":
