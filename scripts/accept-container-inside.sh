@@ -53,8 +53,15 @@ if (manifest.main !== "./out/extension.js") {
 
     test -f "$EXTENSION/pyrust-debugger.vsix"
     test -f /opt/pyrust-extension/pyrust-debugger.vsix
-    test -f \
-        /root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.1/out/extension.js
+    node -e '
+const fs = require("node:fs");
+const manifest = require("./vscode-extension/package.json");
+const root =
+  `/root/.vscode-server/extensions/${manifest.publisher}.${manifest.name}-${manifest.version}`;
+if (!fs.existsSync(`${root}/out/extension.js`)) {
+  throw new Error(`preinstalled PyRust extension is missing: ${root}`);
+}
+'
     test -x "$ROOT/.devcontainer/install-vscode-extension.sh"
     node -e '
 const fs = require("node:fs");

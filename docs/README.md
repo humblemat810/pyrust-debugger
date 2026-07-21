@@ -27,6 +27,13 @@
 
 ## Planning
 
+- [Developer Tools submission narrative](submission/openai-build-week.md)
+- [Submission checklist](submission/checklist.md)
+- [Demo runbook](submission/demo-runbook.md)
+- [Submission form copy](submission/form-copy.md)
+- [Demo narration](submission/narration.md)
+- [Submission verification record: 2026-07-21](submission/verification-2026-07-21.md)
+- [Submission revision status command](../scripts/submission-status.sh)
 - [Project plan](project-plan.md)
 - [MVP details](mvp.md)
 - [First workable slice acceptance](acceptance/first-workable-slice.md)

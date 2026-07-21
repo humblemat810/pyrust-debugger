@@ -89,12 +89,12 @@ COPY --from=extension-build /src/pyrust-debugger.vsix /opt/pyrust-extension/pyru
 
 # Preinstall before VS Code Server first scans extensions. The attach helper can
 # later refresh this same VSIX through VS Code's extension manager.
-RUN mkdir -p /root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.5 \
-    && unzip -q /opt/pyrust-extension/pyrust-debugger.vsix -d /tmp/pyrust-vsix \
-    && cp -a /tmp/pyrust-vsix/extension/. \
-        /root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.5/ \
-    && test -f \
-        /root/.vscode-server/extensions/pyrust.pyrust-debugger-0.0.5/out/extension.js \
+RUN unzip -q /opt/pyrust-extension/pyrust-debugger.vsix -d /tmp/pyrust-vsix \
+    && extension_dir="$(node -p 'const manifest = require("/tmp/pyrust-vsix/extension/package.json"); `${manifest.publisher}.${manifest.name}-${manifest.version}`')" \
+    && install_root="/root/.vscode-server/extensions/${extension_dir}" \
+    && mkdir -p "${install_root}" \
+    && cp -a /tmp/pyrust-vsix/extension/. "${install_root}/" \
+    && test -f "${install_root}/out/extension.js" \
     && rm -rf /tmp/pyrust-vsix
 
 RUN mkdir -p /workspaces /opt/pyrust-target \

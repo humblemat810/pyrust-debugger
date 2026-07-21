@@ -1,7 +1,62 @@
-# pyrust-debugger
+# PyRust Debugger
 
-An experimental VS Code debugger that presents Python and Rust frames in one
-call stack.
+**A Developer Tools prototype for mixed CPython 3.14 and Rust debugging in VS
+Code.**
+
+PyRust combines CodeLLDB's native stack with read-only CPython frame recovery,
+then presents the result through one DAP session. It also adds a Process Tree
+that groups real processes and native threads without inventing false nesting
+for `asyncio` tasks, Rust futures, or independent OS threads.
+
+```text
+Python -> Rust extension -> Rust breakpoint
+Rust -> embedded Python -> Rust callback
+Python thread -> Rust -> named Rust child thread
+```
+
+Start with the [Developer Tools submission narrative](docs/submission/openai-build-week.md),
+[demo runbook](docs/submission/demo-runbook.md), and
+[submission checklist](docs/submission/checklist.md).
+
+## Quick Demo Gate
+
+In the Dev Container, run:
+
+```bash
+./scripts/verify-submission.sh
+```
+
+Then choose **PyRust: Python and Rust Threads**, set a breakpoint at
+`research/fixtures/python_outer/src/lib.rs:6`, and start debugging. See the
+[demo runbook](docs/submission/demo-runbook.md) for the exact recording flow.
+
+## Architecture At A Glance
+
+```mermaid
+flowchart LR
+    vscode[VS Code Debug UI] -->|DAP| proxy[PyRust DAP Proxy]
+    proxy -->|DAP| lldb[CodeLLDB]
+    proxy -->|read-only stack recovery| cpython[CPython 3.14]
+    lldb --> target[PyO3 debuggee]
+    cpython --> target
+    proxy --> tree[PyRust Process Tree]
+```
+
+CodeLLDB remains the execution owner: it launches, stops, and evaluates native
+Rust frames. PyRust augments that native debugger session with read-only Python
+frame recovery and a separate, honest process/thread view.
+
+## Why PyRust
+
+- **One debugging session:** instead of asking developers to correlate a
+  Python debugger and a native debugger manually.
+- **Correct concurrency model:** actual processes own native threads; unrelated
+  threads and async tasks are not rendered as fake nested call stacks.
+- **Native debugger preserved:** Rust expressions, scopes, source breakpoints,
+  and stepping behavior stay under CodeLLDB ownership.
+- **Bounded Python inspection:** supported Python locals and expressions are
+  evaluated from a captured read-only snapshot, never by executing code in the
+  stopped target.
 
 ## Initial direction
 
