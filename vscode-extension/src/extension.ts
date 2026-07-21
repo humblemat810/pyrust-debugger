@@ -132,10 +132,20 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.window.registerTreeDataProvider("pyrustProcessTree", processTree),
     vscode.commands.registerCommand("pyrust.focusFrame", (node) =>
-      focusFrame(frameHighlighter, node),
+      focusFrame(
+        frameHighlighter,
+        node,
+        vscode.debug.activeDebugSession,
+        processTree,
+      ),
     ),
     vscode.commands.registerCommand("pyrust.focusThread", (node) =>
-      focusThread(frameHighlighter, node),
+      focusThread(
+        frameHighlighter,
+        node,
+        vscode.debug.activeDebugSession,
+        processTree,
+      ),
     ),
     vscode.debug.onDidStartDebugSession((session) => {
       if (session.type === "pyrust") {
@@ -153,6 +163,14 @@ export function activate(context: vscode.ExtensionContext): void {
         return {
           onDidSendMessage(message: unknown) {
             const event = message as { type?: string; event?: string };
+            if (
+              event.type === "event" &&
+              ["continued", "exited", "stopped", "terminated"].includes(
+                event.event ?? "",
+              )
+            ) {
+              processTree.invalidate(session);
+            }
             if (
               event.type === "event" &&
               [

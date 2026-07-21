@@ -15,7 +15,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "research" / "fixtures" / "python_outer"
 COORDINATOR_TIMEOUT_SECONDS = 30.0
-WORKER_TIMEOUT_SECONDS = 20.0
+DEFAULT_WORKER_TIMEOUT_SECONDS = 20.0
+BREAKPOINT_HOLD_TIMEOUT_ENV = "PYRUST_BREAKPOINT_HOLD_TIMEOUT_SECONDS"
 COMMAND_LIMIT = 160
 VALUES_BY_LABEL = {"process-A": 20, "process-B": 40}
 
@@ -26,6 +27,23 @@ def _bounded_command_summary(label: str, value: int) -> str:
         f"{label} {value}"
     )
     return summary[:COMMAND_LIMIT]
+
+
+def _breakpoint_hold_timeout_seconds() -> int:
+    configured = os.environ.get(BREAKPOINT_HOLD_TIMEOUT_ENV)
+    if configured is None:
+        return int(DEFAULT_WORKER_TIMEOUT_SECONDS)
+    try:
+        seconds = int(configured)
+    except ValueError as error:
+        raise ValueError(
+            f"{BREAKPOINT_HOLD_TIMEOUT_ENV} must be a positive integer"
+        ) from error
+    if seconds <= 0:
+        raise ValueError(
+            f"{BREAKPOINT_HOLD_TIMEOUT_ENV} must be a positive integer"
+        )
+    return seconds
 
 
 def _write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
@@ -94,6 +112,7 @@ def python_worker(
     workers_lock: threading.Lock,
     workers_announced: threading.Event,
     first_worker_finished: threading.Event,
+    breakpoint_hold_timeout: float,
     results: dict[str, int],
     failures: list[BaseException],
 ) -> None:
@@ -114,9 +133,11 @@ def python_worker(
             if len(workers) == 2:
                 workers_announced.set()
         ready.wait()
-        if not calls_released.wait(WORKER_TIMEOUT_SECONDS):
+        if not calls_released.wait(breakpoint_hold_timeout):
             raise TimeoutError(f"{worker_name} was not released to enter Rust")
-        if worker_number == 2 and not first_worker_finished.wait(WORKER_TIMEOUT_SECONDS):
+        if worker_number == 2 and not first_worker_finished.wait(
+            breakpoint_hold_timeout
+        ):
             raise TimeoutError(f"{worker_name} was not released after worker 1")
 
         import pyrust_native
@@ -157,7 +178,8 @@ def run_process_thread_worker(label: str, value: int) -> None:
     workers_announced = threading.Event()
     first_worker_finished = threading.Event()
     calls_released = threading.Event()
-    ready = threading.Barrier(3, timeout=WORKER_TIMEOUT_SECONDS)
+    breakpoint_hold_timeout = _breakpoint_hold_timeout_seconds()
+    ready = threading.Barrier(3, timeout=breakpoint_hold_timeout)
     results: dict[str, int] = {}
     failures: list[BaseException] = []
     threads = [
@@ -173,6 +195,7 @@ def run_process_thread_worker(label: str, value: int) -> None:
                 workers_lock,
                 workers_announced,
                 first_worker_finished,
+                breakpoint_hold_timeout,
                 results,
                 failures,
             ),
@@ -184,7 +207,7 @@ def run_process_thread_worker(label: str, value: int) -> None:
     try:
         for worker in threads:
             worker.start()
-        if not workers_announced.wait(WORKER_TIMEOUT_SECONDS):
+        if not workers_announced.wait(breakpoint_hold_timeout):
             raise TimeoutError(f"{label} workers did not publish native thread IDs")
         with workers_lock:
             announced_workers = sorted(workers, key=lambda worker: str(worker["name"]))
@@ -204,7 +227,7 @@ def run_process_thread_worker(label: str, value: int) -> None:
         # from waiting on the call gate after a coordinator timeout.
         calls_released.set()
         for worker in threads:
-            worker.join(WORKER_TIMEOUT_SECONDS)
+            worker.join(breakpoint_hold_timeout)
 
     live_workers = [worker.name for worker in threads if worker.is_alive()]
     if live_workers:

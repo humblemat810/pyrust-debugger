@@ -41,6 +41,16 @@ worker B's stop is inspected.
 The same assertions apply when two Rust `std::thread` workers enter embedded
 Python and stop at `rust_callback`.
 
+### AC-PRT-01 through AC-PRT-04: Python Entry With Rust Child Threads
+
+Python workers enter a PyO3 function that creates four named Rust child
+threads. The Process Tree includes every CodeLLDB thread, each Rust child stop
+retains its Rust parent function, all four children stop exactly once, and
+source-less paused sibling frames return instruction-address disassembly
+without making the adapter unusable. Native-only Rust child stacks do not emit
+mixed-stack boundary failures, and a rejected disassembly request leaves the
+process stopped.
+
 ## Completed Multiprocess Criteria
 
 ### AC-MP-01: Child Registration

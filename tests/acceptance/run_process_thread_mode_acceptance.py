@@ -47,9 +47,22 @@ CHILD_LABELS = {"process-A": 20, "process-B": 40}
 TREE_TIMEOUT_SECONDS = 30.0
 
 
-def _start_fixture(registry: Path) -> tuple[DapClient, dict[str, Any]]:
+def _start_fixture(
+    registry: Path,
+    *,
+    breakpoint_hold_timeout_seconds: int | None = None,
+) -> tuple[DapClient, dict[str, Any]]:
     client = DapClient(proxy_command())
     initialize(client)
+    fixture_env = {
+        "PYRUST_CHILD_REGISTRY": str(registry),
+        "PYRUST_PYTHON": str(PYTHON),
+        "PYRUST_PROCESS_THREAD_WORKER": str(WORKER),
+    }
+    if breakpoint_hold_timeout_seconds is not None:
+        fixture_env["PYRUST_BREAKPOINT_HOLD_TIMEOUT_SECONDS"] = str(
+            breakpoint_hold_timeout_seconds
+        )
     launch = client.send(
         "launch",
         launch_arguments(
@@ -57,11 +70,7 @@ def _start_fixture(registry: Path) -> tuple[DapClient, dict[str, Any]]:
             args=[],
         )
         | {
-            "env": {
-                "PYRUST_CHILD_REGISTRY": str(registry),
-                "PYRUST_PYTHON": str(PYTHON),
-                "PYRUST_PROCESS_THREAD_WORKER": str(WORKER),
-            },
+            "env": fixture_env,
             "pyrustChildRegistryPath": str(registry),
             "pyrustProcessMode": "children",
             "pyrustThreadMode": "single",

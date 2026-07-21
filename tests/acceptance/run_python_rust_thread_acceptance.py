@@ -25,6 +25,7 @@ CRITERIA = (
     "AC-PRT-01",
     "AC-PRT-02",
     "AC-PRT-03",
+    "AC-PRT-04",
 )
 EXPECTED_WORKERS = {
     "rust-child-20-1",
@@ -142,13 +143,107 @@ def _assert_tree_matches_dap_threads(client: DapClient) -> None:
         )
 
 
+def _assert_paused_sibling_disassembly(client: DapClient) -> None:
+    threads_request = client.send("threads")
+    threads = client.response(threads_request, timeout=10).get("body", {}).get(
+        "threads"
+    )
+    if not isinstance(threads, list):
+        raise DapError(f"DAP threads response was malformed: {threads}")
+
+    disassembled = 0
+    for thread in threads:
+        thread_id = thread.get("id") if isinstance(thread, dict) else None
+        if not isinstance(thread_id, int):
+            continue
+        stack_request = client.send(
+            "stackTrace",
+            {"threadId": thread_id, "startFrame": 0, "levels": 1},
+        )
+        frames = client.response(stack_request, timeout=15).get("body", {}).get(
+            "stackFrames"
+        )
+        if not isinstance(frames, list) or not frames:
+            continue
+        frame = frames[0] if isinstance(frames[0], dict) else {}
+        source = frame.get("source") if isinstance(frame.get("source"), dict) else {}
+        instruction_pointer = frame.get("instructionPointerReference")
+        if source.get("path") or not isinstance(instruction_pointer, str):
+            continue
+        disassemble_request = client.send(
+            "disassemble",
+            {
+                "memoryReference": instruction_pointer,
+                "instructionOffset": -4,
+                "instructionCount": 12,
+                "resolveSymbols": True,
+            },
+        )
+        instructions = client.response(disassemble_request, timeout=10).get(
+            "body", {}
+        ).get("instructions")
+        if not isinstance(instructions, list) or not instructions:
+            raise DapError(
+                f"paused sibling {thread_id} returned no native disassembly"
+            )
+        disassembled += 1
+
+    if disassembled == 0:
+        raise DapError("no paused sibling exposed an instruction-backed frame")
+
+    health_request = client.send("threads")
+    if client.response(health_request, timeout=10).get("success") is not True:
+        raise DapError("adapter became unusable after sibling disassembly")
+
+    rejected_request = client.send(
+        "disassemble",
+        {
+            "memoryReference": "0x1",
+            "instructionOffset": 0,
+            "instructionCount": 4,
+            "resolveSymbols": True,
+        },
+    )
+    rejected = client.wait_for(
+        lambda message: message.get("type") == "response"
+        and message.get("request_seq") == rejected_request,
+        timeout=10,
+    )
+    if rejected.get("success") is not False:
+        raise DapError("known-invalid disassembly unexpectedly succeeded")
+
+    tree_request = client.send("pyrust/processTree")
+    processes = client.response(tree_request, timeout=10).get("body", {}).get(
+        "processes"
+    )
+    if not isinstance(processes, list) or not any(
+        process.get("isStopped") is True
+        for process in processes
+        if isinstance(process, dict)
+    ):
+        raise DapError("failed disassembly changed the stopped process state")
+
+
+def _assert_no_native_boundary_diagnostic(client: DapClient) -> None:
+    messages = [*client.messages, *client.pending, *client.deferred]
+    output = "\n".join(
+        str((message.get("body") or {}).get("output", ""))
+        for message in messages
+        if message.get("type") == "event" and message.get("event") == "output"
+    )
+    if "native fixture boundary was not found" in output:
+        raise DapError(f"native-only stack emitted a helper failure: {output}")
+
+
 def python_threads_create_rust_threads() -> None:
     client, stopped = _start_fixture()
     try:
         _assert_tree_matches_dap_threads(client)
+        _assert_paused_sibling_disassembly(client)
         seen: set[str] = set()
         for index in range(len(EXPECTED_WORKERS)):
             thread_id = _assert_rust_child_stop(client, stopped)
+            _assert_no_native_boundary_diagnostic(client)
             name = _worker_name(client, thread_id)
             if name in seen:
                 raise DapError(f"Rust worker stopped twice before all workers ran: {name}")
@@ -162,6 +257,7 @@ def python_threads_create_rust_threads() -> None:
                 stopped = client.event("stopped", timeout=30)
         if seen != EXPECTED_WORKERS:
             raise DapError(f"did not observe each named Rust worker: {seen}")
+        _assert_no_native_boundary_diagnostic(client)
     finally:
         client.close()
 

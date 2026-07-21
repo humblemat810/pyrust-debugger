@@ -22,6 +22,9 @@ env -u NODE_OPTIONS code --list-extensions --show-versions | grep -Fx \
 
 3. Run `Developer: Reload Window`. If the extension was updated while a
    debug session was running, stop that session first.
+   If the attach log says the extension install was deferred, run
+   `bash .devcontainer/install-vscode-extension.sh` once from a fresh
+   integrated Dev Container terminal, then reload the window.
 4. Open **Run and Debug**. In the Debug sidebar, find **PyRust Process Tree**.
    It stays visible even before a PyRust session starts and is empty until one
    is active.
@@ -104,6 +107,45 @@ caller/callee stack relationship. Clicking a stopped `rust-child-*` thread
 opens `rust_inner`; its Call Stack includes `rust_inner` and
 `rust_outer_with_rust_threads`, but does not fabricate a Python frame from a
 different OS thread.
+
+Every paused sibling is selectable. A Python main/worker sibling can be
+blocked in a libc synchronization frame, which has no workspace source file.
+Clicking that frame or thread must open CodeLLDB-provided disassembly rather
+than silently doing nothing. Only workspace-backed frames receive the amber
+PyRust source-line decoration.
+
+Some platform/runtime frames expose an address that LLDB cannot decode. PyRust
+first asks for CodeLLDB's current native source content, then attempts a
+bounded forward disassembly. If neither works, the frame reports one concise
+unavailable message and the debuggee must remain paused and usable.
+
+Continue invalidates the expanded frame rows. PyRust tags each row with its
+debug session and stop generation; an old row must report that it is stale and
+must not send a cached CodeLLDB source reference. Collapse and expand the
+current thread to obtain its new rows.
+
+This fixture has four named Rust-child breakpoint stops. It remains paused
+without a timer while you inspect a stop. After you press Continue on the
+fourth stop, the fixture finishes and VS Code closes the debug session by
+design; press `F5` to start another run.
+
+## QC-PT-03B: Processes And Threads
+
+1. Select `PyRust: Process and Threads`.
+2. Set a breakpoint at `research/fixtures/python_outer/src/lib.rs:6`.
+3. Start debugging and expand both Python child processes.
+4. Leave one stopped worker at the breakpoint for at least 60 seconds.
+
+The workspace launch sets `PYRUST_BREAKPOINT_HOLD_TIMEOUT_SECONDS=3600`.
+The process tree and debug session must remain alive while you inspect it.
+The short 20/45-second watchdog defaults remain active only when the fixture is
+run by automation without this launch setting.
+
+Automated long-idle proof:
+
+```bash
+.venv/bin/python -m tests.acceptance.run_process_thread_idle_acceptance
+```
 
 ## QC-PT-04: Python Parent With Child Processes
 

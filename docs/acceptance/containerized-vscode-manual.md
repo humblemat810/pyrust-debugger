@@ -94,10 +94,12 @@ On the local computer:
    `Dev Containers: Reopen in Container` from the same Remote-SSH window.
 8. Wait for `.devcontainer/bootstrap.sh` to finish.
 9. Wait for `.devcontainer/install-vscode-extension.sh` to report that the
-   PyRust extension is installed or already current when VS Code IPC is
-   available. The image already preinstalls the packaged extension before
-   VS Code first scans extensions, so no terminal command is required after a
-   normal rebuild.
+   PyRust extension is installed or already current. It discards a stale
+   inherited VS Code IPC socket and waits for a live one. A deferred install is
+   non-fatal during initial attach and can be retried from a fresh integrated
+   Dev Container terminal. The image already preinstalls the packaged extension
+   before VS Code first scans extensions, so no terminal command is required
+   after a normal rebuild.
 10. Confirm the lower-left remote indicator identifies the PyRust Dev
    Container, not only the SSH host.
 11. In the container terminal, verify:
@@ -151,6 +153,11 @@ Docker socket mount inside the Dev Container is required.
   stale JavaScript-debugger preload does not affect the PyRust VSIX install.
 - If a breakpoint is unverified, stop the session, confirm both fixture source
   paths above, and restart the corresponding `PyRust` configuration.
+- `PyRust: Process and Threads` sets a one-hour manual breakpoint-hold timeout.
+  If that session exits after roughly one minute, confirm the active
+  `.vscode/launch.json` includes
+  `PYRUST_BREAKPOINT_HOLD_TIMEOUT_SECONDS: "3600"`, then restart the
+  configuration so the rebuilt Rust fixture receives it.
 
 Official VS Code reference:
 [Open a folder on a remote SSH host in a container](https://code.visualstudio.com/docs/remote/ssh#_open-a-folder-on-a-remote-ssh-host-in-a-container).

@@ -178,6 +178,57 @@ class MixedStackHooksTests(unittest.TestCase):
             },
         )
 
+    def test_native_only_rust_child_skips_python_unwinder_and_diagnostic(
+        self,
+    ) -> None:
+        native_only = [
+            {"id": 101, "name": "pyrust_native::rust_inner"},
+            {
+                "id": 102,
+                "name": (
+                    "pyrust_native::rust_outer_with_rust_threads::"
+                    "{closure#0}::{closure#0}::{closure#0}"
+                ),
+            },
+        ]
+        self.proxy.native_frames = native_only
+
+        with patch(
+            "prototype.adapter.mixed_stack.read_python_stacks",
+            side_effect=AssertionError("native-only stack must not unwind Python"),
+        ):
+            response = self.hooks.on_stack_trace(
+                {"arguments": {"threadId": 77}},
+                self.context,
+            )
+
+        self.assertTrue(response.success)
+        self.assertEqual(
+            response.body,
+            {"stackFrames": native_only, "totalFrames": 2},
+        )
+        self.assertEqual(self.proxy.outputs, [])
+
+    def test_single_rust_inner_frame_is_normal_native_fallback(self) -> None:
+        native_only = [{"id": 101, "name": "pyrust_native::rust_inner"}]
+        self.proxy.native_frames = native_only
+
+        with patch(
+            "prototype.adapter.mixed_stack.read_python_stacks",
+            side_effect=AssertionError("native-only stack must not unwind Python"),
+        ):
+            response = self.hooks.on_stack_trace(
+                {"arguments": {"threadId": 77}},
+                self.context,
+            )
+
+        self.assertTrue(response.success)
+        self.assertEqual(
+            response.body,
+            {"stackFrames": native_only, "totalFrames": 1},
+        )
+        self.assertEqual(self.proxy.outputs, [])
+
     def test_rust_outer_golden_merge_preserves_all_native_frames(self) -> None:
         reverse_native = [
             {"id": 201, "name": "rust_outer_python_inner::rust_callback"},

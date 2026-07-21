@@ -29,10 +29,13 @@ export interface PyRustStackFrame {
   source?: {
     name?: string;
     path?: string;
+    origin?: string;
+    sourceReference?: number;
   };
+  instructionPointerReference?: string;
 }
 
-export type ProcessTreeNode =
+export type ProcessTreeNode = (
   | { kind: "process"; process: PyRustProcess }
   | { kind: "thread"; process: PyRustProcess; thread: PyRustThread }
   | {
@@ -40,7 +43,28 @@ export type ProcessTreeNode =
       process: PyRustProcess;
       thread: PyRustThread;
       frame: PyRustStackFrame;
-    };
+      frameIndex: number;
+    }
+) & {
+  sessionId?: string;
+  generation?: number;
+};
+
+export interface PyRustDisassembledInstruction {
+  address: string;
+  instruction: string;
+  instructionBytes?: string;
+  symbol?: string;
+  line?: number;
+  location?: {
+    name?: string;
+    path?: string;
+  };
+}
+
+export interface PyRustDebugRequester {
+  customRequest(command: string, args?: unknown): Thenable<unknown>;
+}
 
 export function rootProcesses(tree: PyRustProcessTree): PyRustProcess[] {
   const known = new Set(tree.processes.map((process) => process.processId));
@@ -89,7 +113,136 @@ export function stackFrameNodes(
   thread: PyRustThread,
   frames: PyRustStackFrame[],
 ): ProcessTreeNode[] {
-  return frames.map((frame) => ({ kind: "frame", process, thread, frame }));
+  return frames.map((frame, frameIndex) => ({
+    kind: "frame",
+    process,
+    thread,
+    frame,
+    frameIndex,
+  }));
+}
+
+export type FrameOpenTarget = "source" | "disassembly" | "unavailable";
+
+export function frameOpenTarget(frame: PyRustStackFrame): FrameOpenTarget {
+  if (frame.source?.path && frame.line) {
+    return "source";
+  }
+  if (
+    isPositiveInteger(frame.source?.sourceReference) ||
+    hasInstructionPointer(frame)
+  ) {
+    return "disassembly";
+  }
+  return "unavailable";
+}
+
+export function sameFrameLocation(
+  expected: PyRustStackFrame,
+  current: PyRustStackFrame,
+): boolean {
+  if (
+    expected.instructionPointerReference &&
+    current.instructionPointerReference
+  ) {
+    return (
+      normalizeAddress(expected.instructionPointerReference) ===
+      normalizeAddress(current.instructionPointerReference)
+    );
+  }
+  if (
+    expected.source?.path &&
+    current.source?.path &&
+    expected.line &&
+    current.line
+  ) {
+    return (
+      expected.source.path === current.source.path &&
+      expected.line === current.line &&
+      expected.name === current.name
+    );
+  }
+  return expected.name === current.name;
+}
+
+export function renderDisassembly(
+  frame: PyRustStackFrame,
+  instructions: PyRustDisassembledInstruction[],
+): string {
+  const instructionPointer = frame.instructionPointerReference ?? "";
+  const currentAddress = normalizeAddress(instructionPointer);
+  const body = instructions.map((instruction) => {
+    const marker =
+      normalizeAddress(instruction.address) === currentAddress ? "=>" : "  ";
+    const bytes = (instruction.instructionBytes ?? "").trim().padEnd(30);
+    const locationName =
+      instruction.location?.path ?? instruction.location?.name ?? "";
+    const location = locationName
+      ? ` ; ${locationName}${instruction.line ? `:${instruction.line}` : ""}`
+      : "";
+    return `${marker} ${instruction.address.padEnd(18)} ${bytes} ${instruction.instruction}${location}`;
+  });
+  return [
+    "; PyRust Process Tree disassembly",
+    `; Frame: ${frame.source?.name ?? frame.name}`,
+    `; Instruction pointer: ${instructionPointer || "unavailable"}`,
+    "",
+    ...body,
+  ].join("\n");
+}
+
+export function nodeBelongsToSnapshot(
+  node: ProcessTreeNode,
+  sessionId: string,
+  generation: number,
+): boolean {
+  return node.sessionId === sessionId && node.generation === generation;
+}
+
+export async function nativeFrameContent(
+  session: PyRustDebugRequester,
+  frame: PyRustStackFrame,
+): Promise<string | undefined> {
+  const sourceReference = frame.source?.sourceReference;
+  if (isPositiveInteger(sourceReference)) {
+    try {
+      const response = (await session.customRequest("source", {
+        sourceReference,
+      })) as { content?: unknown };
+      if (typeof response.content === "string" && response.content.trim()) {
+        return [
+          "; PyRust Process Tree native source",
+          `; Frame: ${frame.source?.name ?? frame.name}`,
+          "",
+          response.content,
+        ].join("\n");
+      }
+    } catch {
+      // A stop-scoped source reference may expire. Try the frame PC next.
+    }
+  }
+
+  const instructionPointerReference = frame.instructionPointerReference;
+  if (instructionPointerReference) {
+    try {
+      const response = (await session.customRequest("disassemble", {
+        memoryReference: instructionPointerReference,
+        instructionOffset: 0,
+        instructionCount: 24,
+        resolveSymbols: true,
+      })) as { instructions?: unknown };
+      const instructions = Array.isArray(response.instructions)
+        ? response.instructions.filter(isDisassembledInstruction)
+        : [];
+      if (instructions.length > 0) {
+        return renderDisassembly(frame, instructions);
+      }
+    } catch {
+      // Some frame PCs are not readable instruction boundaries.
+    }
+  }
+
+  return undefined;
 }
 
 export class PyRustProcessTreeProvider
@@ -102,10 +255,13 @@ export class PyRustProcessTreeProvider
   private tree: PyRustProcessTree = { processes: [] };
   private session: vscode.DebugSession | undefined;
   private readonly stackFrames = new Map<string, PyRustStackFrame[]>();
+  private generation = 0;
+  private refreshVersion = 0;
 
   async refresh(session?: vscode.DebugSession): Promise<void> {
-    if (session?.type === "pyrust") {
+    if (session?.type === "pyrust" && session !== this.session) {
       this.session = session;
+      this.generation += 1;
     }
     if (!this.session) {
       this.tree = { processes: [] };
@@ -113,25 +269,58 @@ export class PyRustProcessTreeProvider
       this.changedEmitter.fire(undefined);
       return;
     }
+    const activeSession = this.session;
+    const version = ++this.refreshVersion;
     try {
-      const result = (await this.session.customRequest(
+      const result = (await activeSession.customRequest(
         "pyrust/processTree",
       )) as PyRustProcessTree;
+      if (
+        version !== this.refreshVersion ||
+        activeSession !== this.session
+      ) {
+        return;
+      }
       this.tree = isProcessTree(result) ? result : { processes: [] };
     } catch {
+      if (
+        version !== this.refreshVersion ||
+        activeSession !== this.session
+      ) {
+        return;
+      }
       this.tree = { processes: [] };
     }
     this.stackFrames.clear();
     this.changedEmitter.fire(undefined);
   }
 
+  invalidate(session: vscode.DebugSession): void {
+    if (session === this.session) {
+      this.generation += 1;
+      this.refreshVersion += 1;
+      this.tree = { processes: [] };
+      this.stackFrames.clear();
+      this.changedEmitter.fire(undefined);
+    }
+  }
+
   clear(session?: vscode.DebugSession): void {
     if (!session || session === this.session) {
+      this.generation += 1;
+      this.refreshVersion += 1;
       this.session = undefined;
       this.tree = { processes: [] };
       this.stackFrames.clear();
       this.changedEmitter.fire(undefined);
     }
+  }
+
+  isCurrent(node: ProcessTreeNode, session: vscode.DebugSession): boolean {
+    return (
+      session === this.session &&
+      nodeBelongsToSnapshot(node, session.id, this.generation)
+    );
   }
 
   getTreeItem(node: ProcessTreeNode): vscode.TreeItem {
@@ -208,22 +397,36 @@ export class PyRustProcessTreeProvider
 
   async getChildren(node?: ProcessTreeNode): Promise<ProcessTreeNode[]> {
     if (!node) {
-      return rootProcesses(this.tree).map((process) => ({
-        kind: "process",
-        process,
-      }));
+      return rootProcesses(this.tree).map((process) =>
+        this.withContext({
+          kind: "process",
+          process,
+        }),
+      );
     }
     if (node.kind === "frame") {
       return [];
     }
     if (node.kind === "process") {
-      return processTreeChildren(this.tree, node.process);
+      return processTreeChildren(this.tree, node.process).map((child) =>
+        this.withContext(child),
+      );
     }
     if (!node.thread.isStopped) {
       return [];
     }
     const frames = await this.threadFrames(node);
-    return stackFrameNodes(node.process, node.thread, frames);
+    return stackFrameNodes(node.process, node.thread, frames).map((frame) =>
+      this.withContext(frame),
+    );
+  }
+
+  private withContext(node: ProcessTreeNode): ProcessTreeNode {
+    return {
+      ...node,
+      sessionId: this.session?.id,
+      generation: this.generation,
+    };
   }
 
   private async threadFrames(
@@ -274,23 +477,57 @@ export class PyRustFrameHighlighter implements vscode.Disposable {
   });
   private editor: vscode.TextEditor | undefined;
 
-  async open(frame: PyRustStackFrame | undefined): Promise<void> {
-    const sourcePath = frame?.source?.path;
-    if (!sourcePath || !frame?.line) {
-      return;
+  async open(
+    session: vscode.DebugSession,
+    frame: PyRustStackFrame | undefined,
+  ): Promise<FrameOpenTarget> {
+    const target = frame ? frameOpenTarget(frame) : "unavailable";
+    if (target === "unavailable" || !frame) {
+      return "unavailable";
     }
-    const document = await vscode.workspace.openTextDocument(sourceUri(sourcePath));
-    const range = new vscode.Range(frame.line - 1, 0, frame.line - 1, 0);
-    const previousEditor = this.editor;
-    const editor = await vscode.window.showTextDocument(document, {
-      selection: range,
-      preserveFocus: false,
+
+    if (target === "source") {
+      const sourcePath = frame.source?.path;
+      const line = frame.line;
+      if (!sourcePath || !line) {
+        return "unavailable";
+      }
+      const document = await vscode.workspace.openTextDocument(sourceUri(sourcePath));
+      const range = new vscode.Range(line - 1, 0, line - 1, 0);
+      const previousEditor = this.editor;
+      const editor = await vscode.window.showTextDocument(document, {
+        selection: range,
+        preserveFocus: false,
+      });
+      if (previousEditor && previousEditor !== editor) {
+        previousEditor.setDecorations(this.decoration, []);
+      }
+      editor.setDecorations(this.decoration, [range]);
+      this.editor = editor;
+      return "source";
+    }
+
+    const content = await nativeFrameContent(session, frame);
+    if (content) {
+      await this.openAssemblyDocument(content);
+      return "disassembly";
+    }
+
+    throw new Error(
+      "No readable source or disassembly is available for this native frame.",
+    );
+  }
+
+  private async openAssemblyDocument(content: string): Promise<void> {
+    this.clear();
+    const document = await vscode.workspace.openTextDocument({
+      language: "asm",
+      content,
     });
-    if (previousEditor && previousEditor !== editor) {
-      previousEditor.setDecorations(this.decoration, []);
-    }
-    editor.setDecorations(this.decoration, [range]);
-    this.editor = editor;
+    await vscode.window.showTextDocument(document, {
+      preserveFocus: false,
+      preview: true,
+    });
   }
 
   clear(): void {
@@ -307,36 +544,83 @@ export class PyRustFrameHighlighter implements vscode.Disposable {
 export async function focusThread(
   highlighter: PyRustFrameHighlighter,
   node?: ProcessTreeNode,
+  session = vscode.debug.activeDebugSession,
+  provider?: PyRustProcessTreeProvider,
 ): Promise<void> {
   if (!node || node.kind !== "thread") {
     return;
   }
-  const session = vscode.debug.activeDebugSession;
   if (!session || session.type !== "pyrust") {
     void vscode.window.showWarningMessage(
       "Start a PyRust debug session before focusing a process-tree thread.",
     );
     return;
   }
-  const response = (await session.customRequest("stackTrace", {
-    threadId: node.thread.threadId,
-    startFrame: 0,
-    levels: 1,
-  })) as { stackFrames?: PyRustStackFrame[] };
-  await highlighter.open(response.stackFrames?.[0]);
-  void vscode.window.showInformationMessage(
-    `Focused PyRust thread ${node.thread.threadId} in ${node.process.label}.`,
-  );
+  if (provider && !provider.isCurrent(node, session)) {
+    void vscode.window.showWarningMessage(
+      "This Process Tree thread is stale. Use the current tree entry.",
+    );
+    return;
+  }
+  try {
+    const response = (await session.customRequest("stackTrace", {
+      threadId: node.thread.threadId,
+      startFrame: 0,
+      levels: 1,
+    })) as { stackFrames?: PyRustStackFrame[] };
+    const frame = response.stackFrames?.find(isStackFrame);
+    const target = await highlighter.open(session, frame);
+    if (target === "unavailable") {
+      void vscode.window.showWarningMessage(
+        `PyRust thread ${node.thread.threadId} has no source or disassembly location.`,
+      );
+      return;
+    }
+    void vscode.window.showInformationMessage(
+      target === "source"
+        ? `Focused PyRust thread ${node.thread.threadId} in ${node.process.label}.`
+        : `Opened CodeLLDB disassembly for PyRust thread ${node.thread.threadId}.`,
+    );
+  } catch (error) {
+    void vscode.window.showWarningMessage(
+      `Unable to focus PyRust thread ${node.thread.threadId}: ${errorMessage(error)}`,
+    );
+  }
 }
 
 export async function focusFrame(
   highlighter: PyRustFrameHighlighter,
   node?: ProcessTreeNode,
+  session = vscode.debug.activeDebugSession,
+  provider?: PyRustProcessTreeProvider,
 ): Promise<void> {
   if (!node || node.kind !== "frame") {
     return;
   }
-  await highlighter.open(node.frame);
+  if (!session || session.type !== "pyrust") {
+    void vscode.window.showWarningMessage(
+      "Start a PyRust debug session before focusing a process-tree frame.",
+    );
+    return;
+  }
+  if (provider && !provider.isCurrent(node, session)) {
+    void vscode.window.showWarningMessage(
+      "This Process Tree frame is stale. Expand the current thread again.",
+    );
+    return;
+  }
+  try {
+    const target = await highlighter.open(session, node.frame);
+    if (target === "unavailable") {
+      void vscode.window.showWarningMessage(
+        "This PyRust frame has no source or CodeLLDB disassembly location.",
+      );
+    }
+  } catch (error) {
+    void vscode.window.showWarningMessage(
+      `Unable to focus this PyRust frame: ${errorMessage(error)}`,
+    );
+  }
 }
 
 export function sourceUri(sourcePath: string): vscode.Uri {
@@ -359,4 +643,31 @@ function isStackFrame(value: unknown): value is PyRustStackFrame {
       typeof (value as { id?: unknown }).id === "number" &&
       typeof (value as { name?: unknown }).name === "string",
   );
+}
+
+function isDisassembledInstruction(
+  value: unknown,
+): value is PyRustDisassembledInstruction {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      typeof (value as { address?: unknown }).address === "string" &&
+      typeof (value as { instruction?: unknown }).instruction === "string",
+  );
+}
+
+function hasInstructionPointer(frame: PyRustStackFrame): boolean {
+  return Boolean(frame.instructionPointerReference?.trim());
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
+function normalizeAddress(address: string): string {
+  return address.trim().toLowerCase().replace(/^0x0*/, "");
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

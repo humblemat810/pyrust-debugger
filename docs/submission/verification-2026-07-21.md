@@ -24,10 +24,11 @@ SUBMISSION-DEMO-GATE PASS
 | Python -> Rust stack | `AC-HP-01` through `AC-HP-05` passed |
 | Python -> Rust fallback behavior | `AC-SP-01` through `AC-SP-04` passed |
 | Rust -> Python -> Rust stack | `AC-BF-01` through `AC-BF-05` and `AC-RP-01` through `AC-RP-07` passed |
-| Python entry with Rust child threads | `AC-PRT-01` through `AC-PRT-03` passed |
+| Python entry with Rust child threads | `AC-PRT-01` through `AC-PRT-04` passed |
 | Python thread regression | `AC-MT-01` through `AC-MT-04` passed |
 | Rust thread regression | `AC-RT-01` through `AC-RT-04` passed |
 | Process/thread hierarchy | `AC-PTM-01` through `AC-PTM-07` passed |
+| Process/thread idle breakpoint | `AC-PTM-IDLE` remained stopped and queryable for 65 seconds, beyond the old 45-second fixture cutoff, on both host and Dev Container |
 | Python async non-nesting | `AC-AT-01` through `AC-AT-04` passed |
 | Rust async non-nesting | `AC-RA-01` through `AC-RA-04` passed |
 | VS Code extension | TypeScript compile and VSIX package passed |

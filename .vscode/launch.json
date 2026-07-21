@@ -158,7 +158,8 @@
       "env": {
         "PYRUST_CHILD_REGISTRY": "${workspaceFolder}/.pyrust-child-registry",
         "PYRUST_PYTHON": "${workspaceFolder}/.venv/bin/python",
-        "PYRUST_PROCESS_THREAD_WORKER": "${workspaceFolder}/tests/acceptance/process_thread_worker.py"
+        "PYRUST_PROCESS_THREAD_WORKER": "${workspaceFolder}/tests/acceptance/process_thread_worker.py",
+        "PYRUST_BREAKPOINT_HOLD_TIMEOUT_SECONDS": "3600"
       },
       "pyrustChildRegistryPath": "${workspaceFolder}/.pyrust-child-registry",
       "pyrustProcessMode": "children",

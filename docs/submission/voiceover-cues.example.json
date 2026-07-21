@@ -1,0 +1,25 @@
+{
+  "title": "PyRust 75-second narration",
+  "cues": [
+    {
+      "startSeconds": 0,
+      "file": "audio/01-problem.wav"
+    },
+    {
+      "startSeconds": 10,
+      "file": "audio/02-start.wav"
+    },
+    {
+      "startSeconds": 25,
+      "file": "audio/03-mixed-stack.wav"
+    },
+    {
+      "startSeconds": 45,
+      "file": "audio/04-process-tree.wav"
+    },
+    {
+      "startSeconds": 65,
+      "file": "audio/05-interaction-and-limits.wav"
+    }
+  ]
+}

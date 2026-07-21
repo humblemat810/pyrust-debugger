@@ -7,7 +7,8 @@ use std::{
 };
 
 const COORDINATOR_TIMEOUT: Duration = Duration::from_secs(30);
-const CHILD_EXIT_TIMEOUT: Duration = Duration::from_secs(45);
+const DEFAULT_CHILD_EXIT_TIMEOUT: Duration = Duration::from_secs(45);
+const BREAKPOINT_HOLD_TIMEOUT_ENV: &str = "PYRUST_BREAKPOINT_HOLD_TIMEOUT_SECONDS";
 
 struct ChildSpec {
     label: &'static str,
@@ -68,12 +69,30 @@ fn run() -> Result<(), String> {
         .map(|(_, child)| child.id())
         .collect::<Vec<_>>();
     let result = coordinate_children(&registry, &child_ids)
-        .and_then(|()| wait_for_children(&mut children, CHILD_EXIT_TIMEOUT));
+        .and_then(|()| wait_for_children(&mut children, breakpoint_hold_timeout()?));
     if let Err(error) = result {
         terminate_children(&mut children);
         return Err(error);
     }
     Ok(())
+}
+
+fn breakpoint_hold_timeout() -> Result<Duration, String> {
+    let Some(value) = env::var_os(BREAKPOINT_HOLD_TIMEOUT_ENV) else {
+        return Ok(DEFAULT_CHILD_EXIT_TIMEOUT);
+    };
+    let value = value
+        .to_str()
+        .ok_or_else(|| format!("{BREAKPOINT_HOLD_TIMEOUT_ENV} must be valid UTF-8"))?;
+    let seconds = value
+        .parse::<u64>()
+        .map_err(|_| format!("{BREAKPOINT_HOLD_TIMEOUT_ENV} must be a positive integer"))?;
+    if seconds == 0 {
+        return Err(format!(
+            "{BREAKPOINT_HOLD_TIMEOUT_ENV} must be a positive integer"
+        ));
+    }
+    Ok(Duration::from_secs(seconds))
 }
 
 fn coordinate_children(registry: &Path, child_ids: &[u32]) -> Result<(), String> {

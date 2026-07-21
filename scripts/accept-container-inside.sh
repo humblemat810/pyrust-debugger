@@ -63,6 +63,7 @@ if (!fs.existsSync(`${root}/out/extension.js`)) {
 }
 '
     test -x "$ROOT/.devcontainer/install-vscode-extension.sh"
+    bash -n "$ROOT/.devcontainer/install-vscode-extension.sh"
     node -e '
 const fs = require("node:fs");
 const container = JSON.parse(

@@ -498,51 +498,9 @@ class MixedStackHooks(ProxyHooks):
         ]
         context.synthetic_frames.reserve_native_ids(native_ids)
 
-        try:
-            self._require_epoch(
-                context,
-                request_epoch,
-                process_id=child_process,
-                thread_id=thread_id,
-            )
-            python_frames = self._read_python_frames(
-                process_id=(
-                    context.state.process_id_for_thread(thread_id)
-                    or self._fallback_process_id(thread_id)
-                ),
-                thread_id=thread_id,
-            )
-            self._require_epoch(
-                context,
-                request_epoch,
-                process_id=child_process,
-                thread_id=thread_id,
-            )
-            merged = self._merge_frames(
-                native_frames,
-                python_frames,
-                thread_id,
-                synthetic_process,
-                native_ids,
-                context,
-                synthetic_epoch,
-            )
-            self._require_epoch(
-                context,
-                request_epoch,
-                process_id=child_process,
-                thread_id=thread_id,
-            )
-        except StaleStopError as error:
-            return LocalResponse(success=False, message=str(error))
-        except (
-            InProcessUnwinderUnavailable,
-            HelperTimeout,
-            HelperFailure,
-            StackReadError,
-        ) as error:
-            if isinstance(error, InProcessHelperTimeout):
-                self._diagnose_in_process_timeout_once(context)
+        if not self._is_mixed_stack_candidate(native_frames):
+            merged = native_frames
+        else:
             try:
                 self._require_epoch(
                     context,
@@ -550,17 +508,62 @@ class MixedStackHooks(ProxyHooks):
                     process_id=child_process,
                     thread_id=thread_id,
                 )
-            except StaleStopError as stale_error:
-                return LocalResponse(success=False, message=str(stale_error))
-            if isinstance(error, InProcessUnwinderUnavailable):
-                pass
-            elif isinstance(error, InProcessHelperTimeout):
-                pass
-            elif isinstance(error, HelperTimeout):
-                self._diagnose_once(context, f"PyRust helper timeout: {error}")
-            else:
-                self._diagnose_once(context, f"PyRust helper failure: {error}")
-            merged = native_frames
+                python_frames = self._read_python_frames(
+                    process_id=(
+                        context.state.process_id_for_thread(thread_id)
+                        or self._fallback_process_id(thread_id)
+                    ),
+                    thread_id=thread_id,
+                )
+                self._require_epoch(
+                    context,
+                    request_epoch,
+                    process_id=child_process,
+                    thread_id=thread_id,
+                )
+                merged = self._merge_frames(
+                    native_frames,
+                    python_frames,
+                    thread_id,
+                    synthetic_process,
+                    native_ids,
+                    context,
+                    synthetic_epoch,
+                )
+                self._require_epoch(
+                    context,
+                    request_epoch,
+                    process_id=child_process,
+                    thread_id=thread_id,
+                )
+            except StaleStopError as error:
+                return LocalResponse(success=False, message=str(error))
+            except (
+                InProcessUnwinderUnavailable,
+                HelperTimeout,
+                HelperFailure,
+                StackReadError,
+            ) as error:
+                if isinstance(error, InProcessHelperTimeout):
+                    self._diagnose_in_process_timeout_once(context)
+                try:
+                    self._require_epoch(
+                        context,
+                        request_epoch,
+                        process_id=child_process,
+                        thread_id=thread_id,
+                    )
+                except StaleStopError as stale_error:
+                    return LocalResponse(success=False, message=str(stale_error))
+                if isinstance(error, InProcessUnwinderUnavailable):
+                    pass
+                elif isinstance(error, InProcessHelperTimeout):
+                    pass
+                elif isinstance(error, HelperTimeout):
+                    self._diagnose_once(context, f"PyRust helper timeout: {error}")
+                else:
+                    self._diagnose_once(context, f"PyRust helper failure: {error}")
+                merged = native_frames
 
         start = arguments.get("startFrame", 0)
         levels = arguments.get("levels")
@@ -865,6 +868,15 @@ class MixedStackHooks(ProxyHooks):
         ):
             raise HelperFailure("Rust-outer fixture entry boundary was not found")
         return 1
+
+    @staticmethod
+    def _is_mixed_stack_candidate(
+        native_frames: list[dict[str, Any]],
+    ) -> bool:
+        leaves = [MixedStackHooks._frame_leaf(frame) for frame in native_frames]
+        return leaves[:2] == ["rust_inner", "rust_outer"] or leaves[:1] == [
+            "rust_callback"
+        ]
 
     @staticmethod
     def _frame_leaf(frame: Mapping[str, Any]) -> str:

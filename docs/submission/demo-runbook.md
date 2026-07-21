@@ -34,6 +34,39 @@ env -u NODE_OPTIONS code --list-extensions --show-versions | grep -Fx \
 
 Run **Developer: Reload Window** before recording.
 
+## OBS Studio 32.1.2 Setup (Windows)
+
+Use OBS on the local Windows computer that displays the VS Code window, not on
+the remote Linux host or inside the Dev Container.
+
+1. In the main OBS window, click **Settings** in the bottom-right **Controls**
+   panel.
+2. Click **Output** in the left sidebar.
+3. At the top of the Output page, set **Output Mode** to **Simple**.
+4. In the **Recording** section:
+   - choose a recording path with a few hundred MB free;
+   - set **Recording Quality** to **High Quality, Medium File Size**;
+   - set **Recording Format** to **Hybrid MP4**;
+   - if OBS shows an **Encoder** selector, choose a hardware H.264 encoder
+     when available; otherwise leave the selected software encoder.
+5. Click **Audio** in the left sidebar and choose the intended microphone for
+   **Mic/Auxiliary Audio**. Mute **Desktop Audio** in the main-window Audio
+   Mixer unless its sound is useful in the demo.
+6. Click **Video** in the left sidebar. Use 1920x1080 and 30 FPS, or retain
+   the displayed resolution if the local display is smaller.
+7. Click **Apply**, then **OK**.
+8. In the main window's **Sources** panel, hide any unused source such as
+   **Media Source**. Click **+**, select **Window Capture**, and choose the
+   local VS Code window. Resize the red capture border so only the intended
+   VS Code content is shown.
+9. Make a five-second test using **Start Recording** in the **Controls**
+   panel. Play it before the real take to confirm readable text and working
+   narration.
+
+For a shorter silent recording, Windows 11 Snipping Tool is also suitable.
+For a separately recorded narration merged at fixed timestamps, use the
+[Silent Video And Voiceover Workflow](voiceover-workflow.md).
+
 ## Record
 
 Use [75-Second Demo Narration](narration.md) if a concise voiceover is useful.
@@ -61,8 +94,8 @@ Use [75-Second Demo Narration](narration.md) if a concise voiceover is useful.
 
 - Do not claim Python breakpoints or cross-language stepping.
 - Do not enter Python expressions in a synthetic Python frame.
-- Do not wait at the breakpoint for the fixture timeout; keep the recording
-  moving and continue/end the session after the explanation.
+- Keep the recording moving, but the manual process/thread launch now permits a
+  one-hour breakpoint hold and must not terminate during normal inspection.
 
 ## Fallback
 
