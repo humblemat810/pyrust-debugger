@@ -19,6 +19,8 @@ from typing import Any, Final
 
 
 _MAX_FRAME_DEPTH: Final = 128
+_MAX_INTERPRETERS: Final = 64
+_MAX_THREAD_STATES: Final = 4096
 _MAX_LOCALS: Final = 256
 _MAX_STRING_BYTES: Final = 16 * 1024
 _MAX_INTEGER_DIGITS: Final = 64
@@ -44,6 +46,8 @@ class LocalFrame:
 @dataclass(frozen=True)
 class _DebugOffsets:
     runtime_interpreters_head: int
+    interpreter_id: int
+    interpreter_next: int
     interpreter_threads_head: int
     thread_size: int
     thread_next: int
@@ -138,7 +142,13 @@ class _RemoteMemory:
         return struct.unpack("<q", self.read(address, 8))[0]
 
 
-def read_python_locals(pid: int, thread_id: int) -> tuple[LocalFrame, ...]:
+def read_python_locals(
+    pid: int,
+    thread_id: int,
+    *,
+    expected_name: str | None = None,
+    expected_path: str | None = None,
+) -> tuple[LocalFrame, ...]:
     """Return newest-first frame-local snapshots for one CPython thread.
 
     Values are limited to ``None``, booleans, integers, floats, strings, and
@@ -162,7 +172,14 @@ def read_python_locals(pid: int, thread_id: int) -> tuple[LocalFrame, ...]:
 
     memory = _RemoteMemory(pid)
     offsets = _read_debug_offsets(memory, pid)
-    tstate = _find_thread_state(memory, offsets, _runtime_address(pid), thread_id)
+    _, tstate = _find_thread_state(
+        memory,
+        offsets,
+        _runtime_address(pid),
+        thread_id,
+        expected_name=expected_name,
+        expected_path=expected_path,
+    )
     current_frame = memory.pointer(tstate + offsets.thread_current_frame)
     return _read_frames(memory, offsets, current_frame)
 
@@ -277,6 +294,8 @@ def _read_debug_offsets(memory: _RemoteMemory, pid: int) -> _DebugOffsets:
 
     return _DebugOffsets(
         runtime_interpreters_head=runtime_offsets["interpreters_head"],
+        interpreter_id=interpreter["id"],
+        interpreter_next=interpreter["next"],
         interpreter_threads_head=interpreter["threads_head"],
         thread_size=thread["size"],
         thread_next=thread["next"],
@@ -441,20 +460,71 @@ def _find_thread_state(
     offsets: _DebugOffsets,
     runtime: int,
     native_thread_id: int,
-) -> int:
+    *,
+    expected_name: str | None = None,
+    expected_path: str | None = None,
+) -> tuple[int, int]:
+    """Return the owning interpreter and exact thread state.
+
+    A native thread can retain parked thread states in multiple interpreters.
+    When that happens, frame identity is required to avoid reading or writing
+    the wrong interpreter.
+    """
+
     interpreter = memory.pointer(runtime + offsets.runtime_interpreters_head)
     if not interpreter:
         raise LocalReadError("target has no active CPython interpreter")
-    thread = memory.pointer(interpreter + offsets.interpreter_threads_head)
-    for _ in range(_MAX_FRAME_DEPTH):
-        if not thread:
+
+    candidates: list[tuple[int, int]] = []
+    seen_interpreters: set[int] = set()
+    for _ in range(_MAX_INTERPRETERS):
+        if not interpreter or interpreter in seen_interpreters:
             break
-        record = memory.read(thread, offsets.thread_size)
-        thread_native_id = _u64(record, offsets.thread_native_thread_id)
-        if thread_native_id == native_thread_id:
-            return thread
-        thread = _u64(record, offsets.thread_next)
-    raise LocalReadError(f"target has no CPython state for OS thread {native_thread_id}")
+        seen_interpreters.add(interpreter)
+
+        thread = memory.pointer(interpreter + offsets.interpreter_threads_head)
+        seen_threads: set[int] = set()
+        for _ in range(_MAX_THREAD_STATES):
+            if not thread or thread in seen_threads:
+                break
+            seen_threads.add(thread)
+            record = memory.read(thread, offsets.thread_size)
+            if _u64(record, offsets.thread_native_thread_id) == native_thread_id:
+                candidates.append((interpreter, thread))
+            thread = _u64(record, offsets.thread_next)
+
+        interpreter = memory.pointer(interpreter + offsets.interpreter_next)
+
+    if not candidates:
+        raise LocalReadError(
+            f"target has no CPython state for OS thread {native_thread_id}"
+        )
+    if len(candidates) == 1:
+        return candidates[0]
+    if expected_name is None or expected_path is None:
+        raise LocalReadError(
+            f"OS thread {native_thread_id} belongs to multiple CPython interpreters"
+        )
+
+    matches: list[tuple[int, int]] = []
+    for interpreter, thread in candidates:
+        current_frame = memory.pointer(thread + offsets.thread_current_frame)
+        frames = _read_frames(memory, offsets, current_frame)
+        if any(
+            frame.name == expected_name and frame.path == expected_path
+            for frame in frames
+        ):
+            matches.append((interpreter, thread))
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise LocalReadError(
+            "no CPython interpreter owns the selected Python frame "
+            f"{expected_name!r} at {expected_path!r}"
+        )
+    raise LocalReadError(
+        "the selected Python frame is ambiguous across multiple interpreters"
+    )
 
 
 def _read_frames(

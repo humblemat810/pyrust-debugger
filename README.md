@@ -112,8 +112,16 @@ The implemented prototype supports:
 
 The structural boundary classifier is proven for PyO3 extension and embedded
 interpreter stacks. It is not a general classifier for every Python/Rust FFI
-technology. Multiple interpreters, free-threaded CPython, and suspended async
-task/future graphs remain outside the proven scope. See
+technology. When one OS thread retains states in multiple CPython
+interpreters, PyRust selects the interpreter whose active frame matches the
+requested function and source path. Stack display and bounded snapshots are
+proven for a subinterpreter-safe Rust extension.
+
+debugpy 1.8.20 is not subinterpreter-safe in this environment. Live Python
+handoff is therefore main-interpreter-only; selecting a subinterpreter Python
+frame with debugpy enabled returns an explicit error and leaves CodeLLDB
+stopped. Free-threaded CPython and suspended async task/future graphs remain
+outside the proven scope. See
 [the documentation index](docs/README.md).
 
 ## Full Python Debugging

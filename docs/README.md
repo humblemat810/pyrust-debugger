@@ -49,6 +49,7 @@
 - [Process and threads manual QC guide](acceptance/process-thread-mode-manual.md)
 - [Reuse a Python-to-Rust thread launch](usage/python-rust-threads.md)
 - [Async coordinator acceptance](acceptance/async-coordinator.md)
+- [Subinterpreter coordinator acceptance](acceptance/subinterpreter-coordinator.md)
 - [Test strategy](test-plan.md)
 - [Risk register](risk-register.md)
 
@@ -80,7 +81,9 @@ commands to debugpy. Foreign frames use reversible engine leases.
 ADR 0011 implements the product invariant: every displayed frame uses its real
 language debugger when selected, independent of which engine caused the stop.
 debugpy is enabled by default; disabling it explicitly selects legacy
-snapshot diagnostics.
+snapshot diagnostics. The invariant is currently main-interpreter-only for
+Python frames: secondary-interpreter stacks and snapshots are selected
+correctly, but debugpy handoff fails closed.
 
 ADR 0006 implements the first process-tree coordinator. Two-worker
 Python-thread and Rust-thread fixtures pass. Python-parent and Rust-parent

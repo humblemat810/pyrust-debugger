@@ -20,6 +20,16 @@ if ! timeout --foreground 120s "$MATURIN" develop \
     exit 1
 fi
 
+echo "debugpy acceptance: building subinterpreter-safe Rust extension"
+if ! timeout --foreground 120s env \
+    PYO3_PYTHON="$PYTHON" \
+    cargo build --locked \
+        --manifest-path \
+        "$ROOT/research/fixtures/subinterpreter_outer/Cargo.toml"; then
+    echo "debugpy acceptance: subinterpreter fixture build failed" >&2
+    exit 1
+fi
+
 echo "debugpy acceptance: building Rust-outer embedded-Python fixture"
 if ! timeout --foreground 180s env \
     PYO3_PYTHON="$PYTHON" \

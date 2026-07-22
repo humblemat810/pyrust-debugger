@@ -134,6 +134,7 @@ evidence is:
 | Threads and processes keep PID/TID ownership | `AC-DP-03`, `AC-DP-04`, `AC-DP-13` through `AC-DP-17`, `AC-DP-24` | Complete for supported fixtures |
 | Active async frames use their real debugger | `AC-DP-25` through `AC-DP-27`, `AC-AT-01` through `AC-AT-04`, `AC-RA-01` through `AC-RA-04` | Complete for active physical stacks |
 | Application function names do not define the boundary | `AC-DP-28`, structural unit and reverse-contract tests | Complete for recognizable PyO3/CPython bridge stacks |
+| Duplicate TIDs across interpreters select the frame-owning state | `AC-DP-29`, remote-locals and remote-debug subinterpreter tests | Complete for stack/snapshot ownership; live debugpy fails closed |
 | Restart restores both engines | `AC-DP-07` | Complete for supported fixture |
 | Clean Dev Container is repeatable | `AC-CV-01` through `AC-CV-10`, rerun on 2026-07-22 | Complete |
 | VSIX compiles, packages, and activates | `./scripts/verify-submission.sh`, `AC-CV-04`, `AC-CV-08`, `AC-CV-09` | Complete |
@@ -152,6 +153,7 @@ discovery now uses generated PyO3 and CPython bridge symbols rather than
 fixture-shaped Rust or Python names.
 
 This is still not universal arbitrary-project support. Non-PyO3/custom FFI
-bridges, multiple interpreters, free-threaded CPython, and missing native debug
-information have not been proven. Suspended async tasks/futures are not
-enumerated or presented as an await graph. These limits must remain explicit.
+bridges, live debugpy operations in secondary interpreters, free-threaded
+CPython, and missing native debug information have not been proven. Suspended
+async tasks/futures are not enumerated or presented as an await graph. These
+limits must remain explicit.

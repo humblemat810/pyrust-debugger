@@ -12,6 +12,7 @@ check_versions() {
     test -f "$EXTENSION/package-lock.json"
     test -f "$ROOT/research/fixtures/python_outer/Cargo.lock"
     test -f "$ROOT/research/fixtures/rust_outer/Cargo.lock"
+    test -f "$ROOT/research/fixtures/subinterpreter_outer/Cargo.lock"
 
     uv sync --frozen --python 3.14.6
     test "$("$PYTHON" --version)" = "Python 3.14.6"

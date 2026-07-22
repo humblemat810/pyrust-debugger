@@ -756,6 +756,9 @@ class PythonProcessManager:
                 process_id,
                 native_thread_id,
                 self._handoff_script,
+                expected_name=target_name,
+                expected_path=target_path,
+                require_main_interpreter=True,
             )
         except RemoteDebugError as error:
             raise PythonTransportError(

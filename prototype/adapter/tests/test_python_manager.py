@@ -366,7 +366,7 @@ class PythonProcessManagerTests(unittest.TestCase):
             )
             with patch(
                 "prototype.adapter.python_manager.queue_remote_debug_script",
-                side_effect=lambda *_args: (
+                side_effect=lambda *_args, **_kwargs: (
                     registry / "handoff-entered-700"
                 ).touch(),
             ) as remote_exec:
@@ -380,6 +380,9 @@ class PythonProcessManagerTests(unittest.TestCase):
                 700,
                 700,
                 registry / "pyrust-debugpy-handoff.py",
+                expected_name="python_worker",
+                expected_path="/workspace/worker.py",
+                require_main_interpreter=True,
             )
             deadline = time.monotonic() + 1
             while (

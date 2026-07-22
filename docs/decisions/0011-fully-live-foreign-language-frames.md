@@ -116,7 +116,7 @@ The slice is complete only when automated and manual tests prove:
 7. Thread, process, async, restart, and cross-language breakpoint handoff
    acceptance remain green.
 
-Automated evidence is `AC-DP-11` through `AC-DP-28`:
+Automated evidence is `AC-DP-11` through `AC-DP-29`:
 
 - direct and child-process Rust-stop to live-debugpy transfers;
 - a prior Python breakpoint followed by Python -> Rust -> Python ownership;
@@ -131,9 +131,22 @@ Automated evidence is `AC-DP-11` through `AC-DP-28`:
 - live debugpy `next` and `stepOut` across two Rust futures; and
 - live CodeLLDB stepping of a retained Rust async poll frame; and
 - structural PyO3/CPython boundary discovery with application function names
-  unrelated to the original fixtures.
+  unrelated to the original fixtures; and
+- exact interpreter/thread-state selection when one native TID appears in
+  multiple CPython interpreters, with fail-closed debugpy behavior.
 
 The last criterion proves that routing does not depend on names such as
 `rust_inner`, `rust_outer`, `rust_callback`, `python_inner`, or
-`python_outer`. It does not prove arbitrary non-PyO3 FFI bridges, multiple
-interpreters, or free-threaded CPython.
+`python_outer`. `AC-DP-29` proves mixed-stack and snapshot ownership in a
+secondary interpreter, but not live debugpy evaluation there. It does not
+prove arbitrary non-PyO3 FFI bridges or free-threaded CPython.
+
+### Secondary Interpreter Boundary
+
+The fully-live invariant remains main-interpreter-only with debugpy 1.8.20.
+Importing debugpy in the tested secondary interpreter aborted the target, so
+PyRust must not attempt that transfer. Before injecting the debugpy rendezvous,
+the coordinator now resolves the selected native TID across every bounded
+interpreter/thread-state list and verifies that the owning interpreter ID is
+the main interpreter. A secondary-interpreter request fails while CodeLLDB
+retains the stop.

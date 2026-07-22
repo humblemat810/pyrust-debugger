@@ -75,6 +75,10 @@ def queue_remote_debug_script(
     pid: int,
     native_thread_id: int,
     script: Path,
+    *,
+    expected_name: str | None = None,
+    expected_path: str | None = None,
+    require_main_interpreter: bool = False,
 ) -> None:
     """Schedule ``script`` on the selected CPython thread at its next safe point."""
 
@@ -91,11 +95,21 @@ def queue_remote_debug_script(
         offsets = _read_debug_offsets(memory, pid)
         runtime = _runtime_address(pid)
         writer = _RemoteWriter(pid)
-        interpreter = memory.pointer(
-            runtime + offsets.runtime_interpreters_head
+        interpreter, thread_state = _find_thread_state(
+            memory,
+            offsets,
+            runtime,
+            native_thread_id,
+            expected_name=expected_name,
+            expected_path=expected_path,
         )
-        if interpreter == 0:
-            raise RemoteDebugError("target has no running CPython interpreter")
+        if (
+            require_main_interpreter
+            and memory.signed_size(interpreter + offsets.interpreter_id) != 0
+        ):
+            raise RemoteDebugError(
+                "debugpy handoff is unavailable for a CPython subinterpreter"
+            )
         enabled_address = (
             interpreter + offsets.interpreter_remote_debugging_enabled
         )
@@ -107,12 +121,6 @@ def queue_remote_debug_script(
             # PyRust only calls this path for a launch that explicitly enabled
             # the private debugpy coordinator.
             writer.write(enabled_address, struct.pack("<I", 1))
-        thread_state = _find_thread_state(
-            memory,
-            offsets,
-            runtime,
-            native_thread_id,
-        )
     except LocalReadError as error:
         raise RemoteDebugError(str(error)) from error
 

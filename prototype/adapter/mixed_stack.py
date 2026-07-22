@@ -1352,7 +1352,13 @@ class MixedStackHooks(ProxyHooks):
         thread_id: int,
     ) -> list[dict[str, Any]]:
         try:
-            snapshots = read_python_locals(process_id, thread_id)
+            expected = frames[0] if frames else {}
+            snapshots = read_python_locals(
+                process_id,
+                thread_id,
+                expected_name=expected.get("name"),
+                expected_path=expected.get("path"),
+            )
         except LocalReadError as error:
             return [
                 {

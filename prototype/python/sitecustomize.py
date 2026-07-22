@@ -27,6 +27,16 @@ def _is_debugpy_internal_process() -> bool:
     )
 
 
+def _is_main_interpreter() -> bool:
+    """One process owns one debugpy server; secondary interpreters reuse it."""
+
+    try:
+        import _interpreters
+    except ImportError:
+        return True
+    return _interpreters.get_current() == _interpreters.get_main()
+
+
 def _write_endpoint(registry: Path, host: str, port: int) -> Path:
     process_id = os.getpid()
     payload = {
@@ -86,11 +96,15 @@ def _bootstrap() -> None:
     if os.environ.get("PYRUST_DEBUGPY_ENABLE") != "1":
         return
     registry_value = os.environ.get("PYRUST_DEBUGPY_REGISTRY")
-    if not registry_value or _is_debugpy_internal_process():
+    if (
+        not registry_value
+        or _is_debugpy_internal_process()
+        or not _is_main_interpreter()
+    ):
         return
 
-    # Child interpreters register independently, so debugpy must not inject a
-    # second server through its own subprocess support.
+    # A process has one debugpy server. Secondary interpreters must not start
+    # another adapter or its daemon threads during their site initialization.
     import debugpy
 
     debugpy_python = os.environ.get("PYRUST_DEBUGPY_PYTHON")

@@ -237,7 +237,26 @@ For repeated transitions, use py-spy-style markers:
 The 3.14.6 private `RemoteUnwinder` API does not expose full block markers.
 Consequently, the current classifier proves the active physical PyO3 boundary
 but does not claim generalized ordering for arbitrary non-PyO3 FFI stacks,
-multiple interpreters, or suspended coroutine/future graphs.
+or suspended coroutine/future graphs.
+
+### Interpreter identity
+
+CPython can retain more than one `PyThreadState` with the same native TID when
+an OS thread moves between interpreters. The memory reader therefore traverses
+the bounded `PyInterpreterState` and `PyThreadState` lists exported through
+CPython's debug-offset table. If several states share the requested native TID,
+the selected frame's function name and source path must identify exactly one
+interpreter. Zero or multiple matches fail closed.
+
+`AC-DP-29` proves this selection with a multi-phase `pyo3-ffi` Rust extension
+declared `Py_MOD_PER_INTERPRETER_GIL_SUPPORTED`. The secondary-interpreter
+Python caller and primitive locals are merged above the Rust leaf.
+
+The process-wide debugpy 1.8.20 server does not safely provide a live frame in
+that secondary interpreter. PyRust checks the owning interpreter ID before
+queuing the debugpy rendezvous and rejects non-main-interpreter handoff without
+releasing CodeLLDB. This preserves execution ownership and avoids the target
+abort observed when debugpy was imported inside the secondary interpreter.
 
 ### Python -> Rust expected shape
 
@@ -323,5 +342,7 @@ Initial settings:
    for the fixed CPython 3.14.6 Linux fixtures by ADR 0005.
 6. Live two-engine frame ownership and stepping. Implemented for the supported
    CPython 3.14.6 / PyO3 Linux topology by ADR 0011.
-7. Broader non-PyO3 bridge classification, multiple interpreters,
-   free-threaded CPython, and suspended async graph presentation.
+7. Interpreter-aware stack and snapshot selection. Implemented with
+   fail-closed live-debugpy behavior for secondary interpreters.
+8. Broader non-PyO3 bridge classification, live secondary-interpreter Python
+   debugging, free-threaded CPython, and suspended async graph presentation.

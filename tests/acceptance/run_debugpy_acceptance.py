@@ -32,6 +32,17 @@ DYNAMIC_CALL_DRIVER = (
 ARBITRARY_BOUNDARY_DRIVER = (
     ROOT / "tests" / "acceptance" / "arbitrary_boundary_fixture_driver.py"
 )
+SUBINTERPRETER_DRIVER = (
+    ROOT / "tests" / "acceptance" / "subinterpreter_fixture_driver.py"
+)
+SUBINTERPRETER_FIXTURE = (
+    ROOT / "research" / "fixtures" / "subinterpreter_outer"
+)
+SUBINTERPRETER_TARGET = Path(
+    os.environ.get("CARGO_TARGET_DIR", str(SUBINTERPRETER_FIXTURE / "target"))
+)
+SUBINTERPRETER_LIBRARY = SUBINTERPRETER_TARGET / "debug" / "libpyrust_subinterp.so"
+SUBINTERPRETER_RUST_SOURCE = SUBINTERPRETER_FIXTURE / "src" / "lib.rs"
 RUST_OUTER_FIXTURE = ROOT / "research" / "fixtures" / "rust_outer"
 RUST_OUTER_TARGET = Path(
     os.environ.get("CARGO_TARGET_DIR", str(RUST_OUTER_FIXTURE / "target"))
@@ -80,6 +91,7 @@ CRITERIA = (
     "AC-DP-26",
     "AC-DP-27",
     "AC-DP-28",
+    "AC-DP-29",
 )
 
 
@@ -90,6 +102,7 @@ def _launch(
     args: list[str],
     env: dict[str, str] | None = None,
     extra: dict[str, Any] | None = None,
+    python_debug: bool = True,
 ) -> int:
     arguments: dict[str, Any] = {
         "program": str(program),
@@ -98,7 +111,7 @@ def _launch(
         "terminal": "console",
         "consoleMode": "evaluate",
         "sourceLanguages": ["rust"],
-        "pyrustPythonDebug": True,
+        "pyrustPythonDebug": python_debug,
     }
     if env:
         arguments["env"] = env
@@ -1512,6 +1525,109 @@ def arbitrary_pyo3_names_merge_and_handoff_to_debugpy() -> None:
         client.close()
 
 
+def subinterpreter_frame_is_owned_and_debugpy_handoff_fails_closed() -> None:
+    snapshot_client = DapClient(proxy_command())
+    try:
+        initialize(snapshot_client)
+        launch = _launch(
+            snapshot_client,
+            program=PYTHON,
+            args=[str(SUBINTERPRETER_DRIVER)],
+            env={"PYRUST_SUBINTERP_LIBRARY": str(SUBINTERPRETER_LIBRARY)},
+            python_debug=False,
+        )
+        snapshot_client.event("initialized", timeout=10)
+        _set_breakpoint(snapshot_client, SUBINTERPRETER_RUST_SOURCE, 48)
+        snapshot_client.response(
+            snapshot_client.send("configurationDone"),
+            timeout=10,
+        )
+        snapshot_client.response(launch, timeout=20)
+        stopped = snapshot_client.event("stopped", timeout=30)
+        native_thread = stopped.get("body", {}).get("threadId")
+        if not isinstance(native_thread, int):
+            raise DapError(f"subinterpreter Rust stop had no thread: {stopped}")
+        routing = next(
+            (
+                frame
+                for frame in _stack(snapshot_client, native_thread)
+                if frame.get("name") == "subinterpreter_worker"
+            ),
+            None,
+        )
+        if not isinstance(routing, dict):
+            raise DapError("subinterpreter Python caller was not merged")
+        scopes = snapshot_client.response(
+            snapshot_client.send("scopes", {"frameId": routing["id"]}),
+            timeout=10,
+        ).get("body", {}).get("scopes")
+        if not isinstance(scopes, list) or not scopes:
+            raise DapError(f"subinterpreter snapshot scopes were missing: {scopes}")
+        reference = scopes[0].get("variablesReference")
+        variables = snapshot_client.response(
+            snapshot_client.send(
+                "variables",
+                {"variablesReference": reference},
+            ),
+            timeout=10,
+        ).get("body", {}).get("variables")
+        if not isinstance(variables, list) or not any(
+            variable.get("name") == "interpreter_label"
+            and variable.get("value") == "'secondary-interpreter'"
+            for variable in variables
+        ):
+            raise DapError(f"subinterpreter snapshot locals were wrong: {variables}")
+    finally:
+        snapshot_client.close()
+
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=PYTHON,
+            args=[str(SUBINTERPRETER_DRIVER)],
+            env={"PYRUST_SUBINTERP_LIBRARY": str(SUBINTERPRETER_LIBRARY)},
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, SUBINTERPRETER_RUST_SOURCE, 48)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        rust_stop = client.event("stopped", timeout=30)
+        native_thread = rust_stop.get("body", {}).get("threadId")
+        if not isinstance(native_thread, int):
+            raise DapError(f"subinterpreter Rust stop had no thread: {rust_stop}")
+        frames = _stack(client, native_thread)
+        routing = next(
+            (
+                frame
+                for frame in frames
+                if frame.get("name") == "subinterpreter_worker"
+                and (frame.get("source") or {}).get("path")
+                == str(SUBINTERPRETER_DRIVER)
+            ),
+            None,
+        )
+        if not isinstance(routing, dict):
+            names = [str(frame.get("name", "")) for frame in frames]
+            raise DapError(f"subinterpreter Python caller was not merged: {names[:12]}")
+        request = client.send("scopes", {"frameId": routing["id"]})
+        response = client.wait_for(
+            lambda item: item.get("type") == "response"
+            and item.get("request_seq") == request,
+            timeout=10,
+        )
+        if response.get("success") is not False or "subinterpreter" not in str(
+            response.get("message", "")
+        ):
+            raise DapError(f"subinterpreter handoff did not fail closed: {response}")
+        if _stack(client, native_thread)[0].get("name") != "pyrust_subinterp::calculate_leaf":
+            raise DapError("failed subinterpreter handoff released the native stop")
+    finally:
+        client.close()
+
+
 def _selected_rust_frame_step(command: str) -> None:
     client = DapClient(proxy_command())
     try:
@@ -1770,6 +1886,10 @@ def main() -> int:
         ("AC-DP-26", rust_futures_use_live_debugpy_python_stepping),
         ("AC-DP-27", rust_future_selected_rust_poll_frame_steps_in_codelldb),
         ("AC-DP-28", arbitrary_pyo3_names_merge_and_handoff_to_debugpy),
+        (
+            "AC-DP-29",
+            subinterpreter_frame_is_owned_and_debugpy_handoff_fails_closed,
+        ),
     )
     results: dict[str, bool] = {}
     for criterion, case in cases:

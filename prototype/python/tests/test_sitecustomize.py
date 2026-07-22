@@ -6,7 +6,7 @@ from threading import Thread
 import time
 import unittest
 
-from prototype.python.sitecustomize import _wait_for_client
+from prototype.python.sitecustomize import _is_main_interpreter, _wait_for_client
 
 
 class _FakeDebugpy:
@@ -18,6 +18,9 @@ class _FakeDebugpy:
 
 
 class SitecustomizeTests(unittest.TestCase):
+    def test_current_process_bootstraps_only_in_main_interpreter(self) -> None:
+        self.assertTrue(_is_main_interpreter())
+
     def test_wait_returns_when_debugpy_connects(self) -> None:
         debugpy = _FakeDebugpy()
         with TemporaryDirectory() as directory:

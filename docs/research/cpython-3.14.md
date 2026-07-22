@@ -132,9 +132,12 @@ untested free-threaded target rather than claim support.
 
 ### Subinterpreters
 
-The 3.14.6 result shape does not expose interpreter identity. If multiple
-interpreters have active frames, ambiguity is possible. Restrict the alpha to
-one interpreter per process.
+The private `RemoteUnwinder` result shape does not expose interpreter identity.
+The implemented memory reader compensates by traversing CPython's exported
+interpreter/thread-state offsets and matching the selected function and source
+path when one native TID has multiple states. Stack display and snapshots are
+proven for a subinterpreter-safe Rust extension. Live debugpy operations remain
+main-interpreter-only and fail closed for a secondary interpreter.
 
 ## Permissions
 
