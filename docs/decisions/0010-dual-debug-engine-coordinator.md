@@ -93,9 +93,9 @@ Limitations:
 - Rust-to-Python cross-language stepping still requires continuing to a
   configured Python breakpoint;
 - after a Rust-owned stop transfers an outer Python frame to debugpy, live
-  evaluation and assignment are supported and `stepIn` returns to CodeLLDB;
-  `next` and `stepOut` at that suspended-inside-Rust boundary are rejected
-  until a coordinated run-to-line transaction is implemented;
+  evaluation, assignment, and `stepIn` back to CodeLLDB are supported;
+  `next` and `stepOut` use a temporary debugpy breakpoint at a source-backed,
+  unambiguous next statement, rather than exposing the injected helper frame;
 - Process Tree selection is supplemental. The built-in Call Stack is the
   authoritative VS Code selection for Debug Console routing.
 

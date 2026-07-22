@@ -138,11 +138,12 @@ process still has one active debugger owner:
   imports, calls, object expansion, evaluation, and assignment.
 
 At that transferred stop, `stepIn` returns to the current CodeLLDB Rust frame.
-`next` and `stepOut` are not yet supported when the selected Python frame is
-physically suspended inside the Rust call; PyRust reports an explicit error
-instead of exposing its injected helper frame. With `pyrustPythonDebug: false`,
-the legacy snapshot path remains limited to primitive locals and the safe
-expression subset.
+`next` and `stepOut` use a temporary real debugpy breakpoint to stop at the
+next source statement in the selected frame or its immediate Python caller.
+They require an unambiguous, source-backed destination; otherwise PyRust
+reports an explicit error instead of exposing its injected helper frame. With
+`pyrustPythonDebug: false`, the legacy snapshot path remains limited to
+primitive locals and the safe expression subset.
 
 This remains an execution-ownership boundary, not simultaneous control by both
 debuggers. PyRust performs an explicit ownership transfer before querying the

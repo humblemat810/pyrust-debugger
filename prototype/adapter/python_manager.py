@@ -690,7 +690,9 @@ class PythonProcessManager:
     ) -> None:
         """Queue a debugpy stop on the selected CPython native thread."""
 
-        deadline = time.monotonic() + 5
+        # Listener startup can lag behind process creation. This bounded wait
+        # occurs outside the coordinator lock, so it does not block peers.
+        deadline = time.monotonic() + 10
         while True:
             with self._lock:
                 session = self._sessions.get(process_id)
@@ -705,6 +707,7 @@ class PythonProcessManager:
             self._handoff_targets[process_id] = (target_name, target_path)
             self._handoff_exposed.discard(process_id)
             self._handoff_user_resuming.discard(process_id)
+            self._handoff_steps.pop(process_id, None)
         ready_marker = self._registry_path / f"handoff-ready-{process_id}"
         entered_marker = self._registry_path / f"handoff-entered-{process_id}"
         ready_marker.unlink(missing_ok=True)
@@ -732,7 +735,7 @@ class PythonProcessManager:
         entered_marker: Path,
         ready_marker: Path,
     ) -> None:
-        if not session.resume_ready.wait(5):
+        if not session.resume_ready.wait(10):
             self._emit_event(
                 "output",
                 {
@@ -745,7 +748,7 @@ class PythonProcessManager:
             )
             ready_marker.touch()
             return
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 10
         while not entered_marker.is_file():
             if time.monotonic() >= deadline:
                 self._emit_event(
@@ -856,6 +859,7 @@ class PythonProcessManager:
             self._handoff_exposed.clear()
             self._handoff_user_resuming.clear()
             self._handoff_resolving.clear()
+            self._handoff_steps.clear()
         for session in sessions:
             session.transport.close()
 
@@ -1076,6 +1080,7 @@ class PythonProcessManager:
                 self._handoff_exposed.discard(process_id)
                 self._handoff_user_resuming.discard(process_id)
                 self._handoff_resolving.discard(process_id)
+                self._handoff_steps.pop(process_id, None)
             if exited_session is not None:
                 exited_session.transport.close()
             self._state.remove_process(process_id)
@@ -1191,7 +1196,7 @@ class PythonProcessManager:
             if target is not None:
                 target_name, target_path = target
                 target_thread_id: int | None = None
-                deadline = time.monotonic() + 3
+                deadline = time.monotonic() + 10
                 while target_thread_id is None:
                     response = session.transport.request("threads")
                     threads = (response.get("body") or {}).get("threads")

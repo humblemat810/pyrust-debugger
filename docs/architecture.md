@@ -118,6 +118,9 @@ cache invalidation complexity.
 - `stepIn` from a Python frame transferred out of a Rust-owned stop: resume
   debugpy's handoff helper, suppress its internal stops, and expose the
   reacquired CodeLLDB Rust frame
+- `next` and `stepOut` from a transferred Python frame: install a temporary
+  debugpy breakpoint at the selected source-backed destination, suppress
+  helper stops, then restore the user's breakpoint set
 
 The coordinator's frame routing table is explicit:
 
@@ -130,9 +133,10 @@ The coordinator's frame routing table is explicit:
 
 A transferred Python frame that is physically suspended inside a Rust call
 supports live debugpy evaluation and assignment. `stepIn` returns to the real
-CodeLLDB Rust frame. `next` and `stepOut` at that exact boundary are rejected
-rather than exposing the injected handoff frame; they require a future
-two-engine run-to-line transaction.
+CodeLLDB Rust frame. `next` and `stepOut` use a temporary debugpy breakpoint
+to land on a source-backed next statement in the selected frame or immediate
+Python caller. If that destination is ambiguous or unavailable, PyRust rejects
+the operation rather than exposing the injected handoff frame.
 
 The built-in VS Code Call Stack is authoritative for frame selection. A custom
 Process Tree can navigate source and display ownership, but it cannot set

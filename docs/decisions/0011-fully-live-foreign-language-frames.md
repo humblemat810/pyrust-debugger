@@ -115,7 +115,7 @@ The slice is complete only when automated and manual tests prove:
 7. Thread, process, async, restart, and cross-language breakpoint handoff
    acceptance remain green.
 
-Automated evidence is `AC-DP-11` through `AC-DP-19`:
+Automated evidence is `AC-DP-11` through `AC-DP-21`:
 
 - direct and child-process Rust-stop to live-debugpy transfers;
 - a prior Python breakpoint followed by Python -> Rust -> Python ownership;
@@ -123,4 +123,5 @@ Automated evidence is `AC-DP-11` through `AC-DP-19`:
 - Python-created worker threads; and
 - Rust-created worker threads in an embedded interpreter;
 - selected Rust-frame stepping back to CodeLLDB; and
-- selected Python-frame `stepIn` back to the current CodeLLDB Rust frame.
+- selected Python-frame `stepIn` back to the current CodeLLDB Rust frame; and
+- selected Python-frame `next` and `stepOut` while suspended inside Rust.
