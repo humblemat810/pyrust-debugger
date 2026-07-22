@@ -37,6 +37,11 @@ impl Future for YieldOnce {
 async fn rust_outer(label: &'static str, value: i64) -> PyResult<()> {
     YieldOnce(false).await;
     Python::attach(|py| {
+        // Embedded CPython does not necessarily import sitecustomize during
+        // initialization. Load PyRust's opt-in debugpy bootstrap explicitly.
+        if std::env::var("PYRUST_DEBUGPY_ENABLE").as_deref() == Ok("1") {
+            PyModule::import(py, "sitecustomize")?;
+        }
         let source =
             CString::new(include_str!("async_embedded.py")).expect("valid Python source");
         let file_name = CString::new(concat!(

@@ -9,7 +9,10 @@ This contract verifies native-breakpoint debugging across:
    back into Rust.
 
 CodeLLDB owns the native breakpoint. The CPython 3.14 reader supplies the
-currently executing Python coroutine frames, locals, and safe expressions.
+currently executing Python coroutine frames for the legacy snapshot checks.
+With `pyrustPythonDebug: true`, selecting that coroutine transfers the same
+OS thread to a real debugpy stop with live locals, evaluation, assignment, and
+Python stepping. Live Rust async poll frames route back to CodeLLDB.
 
 ## Python Async Criteria
 
@@ -62,6 +65,17 @@ containing `rust_outer`, active Python async frames, task-specific
 `label`/`value` locals, safe expression evaluation, and stale-frame
 invalidation after continue.
 
+### Live Async Ownership
+
+`AC-DP-25` through `AC-DP-27` additionally prove:
+
+- two `asyncio` tasks transfer independently to live debugpy frames and return
+  to the next CodeLLDB Rust boundary on the same event-loop OS thread;
+- two Rust futures retain independent live Python coroutine locals while
+  debugpy performs `next` and `stepOut`; and
+- selecting a retained Rust async poll frame performs a genuine CodeLLDB
+  `next` on the same native thread.
+
 ## Commands
 
 ```bash
@@ -71,7 +85,8 @@ invalidation after continue.
 
 ## Deliberate Limitation
 
-At a native breakpoint, PyRust identifies the **currently executing**
-coroutine on the stopped OS thread. It does not enumerate every suspended
-`asyncio.Task`, reconstruct an await graph, or support async-aware Python
-stepping. Those capabilities require a Python-owned debugger such as debugpy.
+PyRust identifies the **currently executing** coroutine on the stopped OS
+thread. With debugpy enabled, that active coroutine supports normal live
+Python operations and source stepping. PyRust still does not enumerate every
+suspended `asyncio.Task`, reconstruct an await graph, or present task/future
+nodes as children of OS threads.

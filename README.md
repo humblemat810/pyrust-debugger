@@ -152,6 +152,11 @@ step result. Threads created after debugpy startup resolve their native TID
 from the selected live Python frame instead of falling back to the process
 leader.
 
+The same routing applies to the currently executing Python coroutine and to
+retained Rust async poll frames. PyRust does not fabricate an await graph or
+nest suspended tasks/futures under OS threads; it debugs the active physical
+stack with debugpy and CodeLLDB.
+
 This remains an execution-ownership boundary, not simultaneous control by both
 debuggers. PyRust performs an explicit ownership transfer before querying the
 foreign-language engine.

@@ -26,7 +26,8 @@ if ! timeout --foreground 180s env \
     cargo build --locked \
         --manifest-path "$ROOT/research/fixtures/rust_outer/Cargo.toml" \
         --bin rust-outer-python-inner \
-        --bin rust-outer-python-threads; then
+        --bin rust-outer-python-threads \
+        --bin rust-outer-python-async; then
     echo "debugpy acceptance: Rust-outer fixture build failed" >&2
     exit 1
 fi

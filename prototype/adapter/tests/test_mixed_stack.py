@@ -155,6 +155,22 @@ class MixedStackHooksTests(unittest.TestCase):
                     ),
                 )
 
+    def test_successful_python_step_in_clears_future_stop_suppression(self) -> None:
+        self.hooks._python_step_in_processes.add(100)
+        self.hooks._python_step_in_suppress_python.add(100)
+        self.hooks._python_handoffs.add((100, 77))
+
+        event = self.hooks.on_stopped(
+            {"body": {"systemProcessId": 100, "threadId": 77}},
+            self.context,
+        )
+
+        assert event is not None
+        self.assertEqual(event["body"]["reason"], "step")
+        self.assertNotIn(100, self.hooks._python_step_in_processes)
+        self.assertNotIn(100, self.hooks._python_step_in_suppress_python)
+        self.assertFalse(self.hooks._python_handoffs)
+
     def test_python_outer_golden_merge_preserves_native_frames(self) -> None:
         stacks = (
             ThreadStack(

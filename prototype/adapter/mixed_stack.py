@@ -291,6 +291,7 @@ class MixedStackHooks(ProxyHooks):
                 python_step_in = process_id in self._python_step_in_processes
                 if python_step_in:
                     self._python_step_in_processes.discard(process_id)
+                    self._python_step_in_suppress_python.discard(process_id)
                     self._python_handoffs = {
                         key for key in self._python_handoffs if key[0] != process_id
                     }

@@ -147,6 +147,12 @@ caches that debugpy-thread-to-OS-TID mapping before asking CodeLLDB to pause,
 inspect, or step the native thread. The process leader is never used as a
 fallback for an unknown worker TID.
 
+Active coroutine frames use the same ownership rules as synchronous Python
+frames. PyRust transfers only the coroutine currently executing on the stopped
+OS thread; debugpy supplies live Python semantics, while retained Rust async
+poll frames use native leases and CodeLLDB. Suspended tasks and futures are not
+invented as process-tree children.
+
 The built-in VS Code Call Stack is authoritative for frame selection. A custom
 Process Tree can navigate source and display ownership, but it cannot set
 VS Code's active DAP stack frame through a public API.

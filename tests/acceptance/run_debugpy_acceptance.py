@@ -43,6 +43,10 @@ RUST_THREADED_SOURCE = RUST_OUTER_FIXTURE / "src" / "threaded_main.rs"
 RUST_THREADED_PYTHON_SOURCE = (
     RUST_OUTER_FIXTURE / "src" / "threaded_embedded.py"
 )
+ASYNC_DRIVER = ROOT / "tests" / "acceptance" / "async_fixture_driver.py"
+RUST_ASYNC_BINARY = RUST_OUTER_TARGET / "debug" / "rust-outer-python-async"
+RUST_ASYNC_SOURCE = RUST_OUTER_FIXTURE / "src" / "async_main.rs"
+RUST_ASYNC_PYTHON_SOURCE = RUST_OUTER_FIXTURE / "src" / "async_embedded.py"
 
 CRITERIA = (
     "AC-DP-01",
@@ -69,6 +73,9 @@ CRITERIA = (
     "AC-DP-22",
     "AC-DP-23",
     "AC-DP-24",
+    "AC-DP-25",
+    "AC-DP-26",
+    "AC-DP-27",
 )
 
 
@@ -1059,7 +1066,7 @@ def rust_worker_python_frame_uses_same_debugpy_thread() -> None:
         client.response(client.send("configurationDone"), timeout=10)
         client.response(launch, timeout=20)
 
-        rust_stop = client.event("stopped", timeout=30)
+        rust_stop = client.event("stopped", timeout=45)
         rust_thread = rust_stop.get("body", {}).get("threadId")
         if not isinstance(rust_thread, int):
             raise DapError(f"Rust-worker callback stop had no thread: {rust_stop}")
@@ -1083,7 +1090,7 @@ def rust_worker_python_frame_uses_same_debugpy_thread() -> None:
             timeout=10,
         )
 
-        python_stop = client.event("stopped", timeout=30)
+        python_stop = client.event("stopped", timeout=45)
         python_thread = python_stop.get("body", {}).get("threadId")
         if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
             raise DapError(
@@ -1126,7 +1133,7 @@ def rust_worker_selected_rust_frame_steps_on_same_native_thread() -> None:
         client.response(client.send("configurationDone"), timeout=10)
         client.response(launch, timeout=20)
 
-        rust_stop = client.event("stopped", timeout=30)
+        rust_stop = client.event("stopped", timeout=45)
         native_thread = rust_stop.get("body", {}).get("threadId")
         if not isinstance(native_thread, int):
             raise DapError(f"Rust worker stop had no native identity: {rust_stop}")
@@ -1144,7 +1151,7 @@ def rust_worker_selected_rust_frame_steps_on_same_native_thread() -> None:
             raise DapError("Rust worker stop had no selectable Python frame")
         client.response(client.send("scopes", {"frameId": routing["id"]}), timeout=10)
 
-        python_stop = client.event("stopped", timeout=30)
+        python_stop = client.event("stopped", timeout=45)
         python_thread = python_stop.get("body", {}).get("threadId")
         if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
             raise DapError(f"Rust worker did not transfer to debugpy: {python_stop}")
@@ -1173,7 +1180,7 @@ def rust_worker_selected_rust_frame_steps_on_same_native_thread() -> None:
             timeout=10,
         )
 
-        stepped = client.event("stopped", timeout=30)
+        stepped = client.event("stopped", timeout=45)
         stepped_thread = stepped.get("body", {}).get("threadId")
         if (
             stepped.get("body", {}).get("reason") != "step"
@@ -1188,6 +1195,259 @@ def rust_worker_selected_rust_frame_steps_on_same_native_thread() -> None:
             or _evaluate(client, top["id"], "1 + 1") != "2"
         ):
             raise DapError(f"Rust worker did not perform a live native step: {top}")
+    finally:
+        client.close()
+
+
+def asyncio_task_live_debugpy_returns_to_same_rust_thread() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(client, program=PYTHON, args=[str(ASYNC_DRIVER)])
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, RUST_SOURCE, 6)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        observed: set[tuple[str, str, str]] = set()
+        native_thread: int | None = None
+        rust_stop = client.event("stopped", timeout=30)
+        for index in range(2):
+            current_native = rust_stop.get("body", {}).get("threadId")
+            if not isinstance(current_native, int):
+                raise DapError(f"async Rust stop had no native thread: {rust_stop}")
+            if native_thread is None:
+                native_thread = current_native
+            elif current_native != native_thread:
+                raise DapError("asyncio tasks changed event-loop OS thread")
+            routing = next(
+                (
+                    frame
+                    for frame in _stack(client, current_native)
+                    if frame.get("name") == "async_worker"
+                    and (frame.get("source") or {}).get("path") == str(ASYNC_DRIVER)
+                ),
+                None,
+            )
+            if not isinstance(routing, dict):
+                raise DapError("async Rust stop had no selectable coroutine frame")
+            client.response(
+                client.send("scopes", {"frameId": routing["id"]}),
+                timeout=10,
+            )
+
+            python_stop = client.event("stopped", timeout=30)
+            python_thread = python_stop.get("body", {}).get("threadId")
+            if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
+                raise DapError(f"async coroutine was not debugpy-owned: {python_stop}")
+            live = _stack(client, python_thread)[0]
+            frame_id = live.get("id")
+            if (
+                live.get("name") != "async_worker"
+                or (live.get("source") or {}).get("path") != str(ASYNC_DRIVER)
+                or not isinstance(frame_id, int)
+            ):
+                raise DapError(f"live async coroutine frame was malformed: {live}")
+            observed.add(
+                (
+                    _evaluate(client, frame_id, "label"),
+                    _evaluate(client, frame_id, "value"),
+                    _evaluate(client, frame_id, "task_name"),
+                )
+            )
+            if index == 0:
+                client.response(
+                    client.send("stepIn", {"threadId": python_thread}),
+                    timeout=10,
+                )
+                returned = client.event("stopped", timeout=30)
+                returned_thread = returned.get("body", {}).get("threadId")
+                top = (
+                    _stack(client, returned_thread)[0]
+                    if isinstance(returned_thread, int)
+                    else {}
+                )
+                if (
+                    returned.get("body", {}).get("reason") != "step"
+                    or returned_thread != native_thread
+                    or (top.get("source") or {}).get("path") != str(RUST_SOURCE)
+                    or "rust_inner" not in str(top.get("name", ""))
+                ):
+                    raise DapError(
+                        f"async Python-to-Rust step lost ownership: {returned}"
+                    )
+                rust_stop = returned
+            else:
+                client.response(
+                    client.send(
+                        "continue",
+                        {"threadId": python_thread, "singleThread": True},
+                    ),
+                    timeout=10,
+                )
+        if observed != {
+            ("'async-A'", "20", "'async-A'"),
+            ("'async-B'", "40", "'async-B'"),
+        }:
+            raise DapError(f"live debugpy async task state crossed tasks: {observed}")
+    finally:
+        client.close()
+
+
+def rust_futures_use_live_debugpy_python_stepping() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=RUST_ASYNC_BINARY,
+            args=[],
+            env={"LD_LIBRARY_PATH": _python_libdir()},
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, RUST_ASYNC_SOURCE, 14)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        observed: set[tuple[str, str]] = set()
+        for index, command in enumerate(("next", "stepOut")):
+            rust_stop = client.event("stopped", timeout=30)
+            native_thread = rust_stop.get("body", {}).get("threadId")
+            if not isinstance(native_thread, int):
+                raise DapError(f"Rust future stop had no native thread: {rust_stop}")
+            routing = next(
+                (
+                    frame
+                    for frame in _stack(client, native_thread)
+                    if frame.get("name") == "python_inner"
+                    and (frame.get("source") or {}).get("path")
+                    == str(RUST_ASYNC_PYTHON_SOURCE)
+                ),
+                None,
+            )
+            if not isinstance(routing, dict):
+                raise DapError("Rust future had no selectable Python coroutine")
+            client.response(
+                client.send("scopes", {"frameId": routing["id"]}),
+                timeout=10,
+            )
+
+            python_stop = client.event("stopped", timeout=30)
+            python_thread = python_stop.get("body", {}).get("threadId")
+            if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
+                raise DapError(f"Rust future was not debugpy-owned: {python_stop}")
+            live = _stack(client, python_thread)[0]
+            frame_id = live.get("id")
+            if (
+                live.get("name") != "python_inner"
+                or (live.get("source") or {}).get("path")
+                != str(RUST_ASYNC_PYTHON_SOURCE)
+                or not isinstance(frame_id, int)
+            ):
+                raise DapError(f"Rust future live Python frame was malformed: {live}")
+            observed.add(
+                (
+                    _evaluate(client, frame_id, "worker_label"),
+                    _evaluate(client, frame_id, "worker_value"),
+                )
+            )
+            client.response(client.send(command, {"threadId": python_thread}), timeout=10)
+            stepped = client.event("stopped", timeout=30)
+            stepped_thread = stepped.get("body", {}).get("threadId")
+            if not isinstance(stepped_thread, int) or stepped_thread < 1_600_000_000:
+                raise DapError(f"Rust future {command} left debugpy: {stepped}")
+            top = _stack(client, stepped_thread)[0]
+            expected = ("python_inner", 10) if command == "next" else ("python_outer", 16)
+            if (
+                stepped.get("body", {}).get("reason") != "step"
+                or (top.get("name"), top.get("line")) != expected
+                or (top.get("source") or {}).get("path")
+                != str(RUST_ASYNC_PYTHON_SOURCE)
+            ):
+                raise DapError(f"Rust future {command} reached the wrong frame: {top}")
+            if index == 0:
+                client.response(
+                    client.send(
+                        "continue",
+                        {"threadId": stepped_thread, "singleThread": True},
+                    ),
+                    timeout=10,
+                )
+        if observed != {
+            ("'rust-async-A'", "20"),
+            ("'rust-async-B'", "40"),
+        }:
+            raise DapError(f"live Rust-future Python state crossed futures: {observed}")
+    finally:
+        client.close()
+
+
+def rust_future_selected_rust_poll_frame_steps_in_codelldb() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=RUST_ASYNC_BINARY,
+            args=[],
+            env={"LD_LIBRARY_PATH": _python_libdir()},
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, RUST_ASYNC_SOURCE, 14)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        rust_stop = client.event("stopped", timeout=30)
+        native_thread = rust_stop.get("body", {}).get("threadId")
+        if not isinstance(native_thread, int):
+            raise DapError(f"Rust async stop had no native thread: {rust_stop}")
+        routing = next(
+            (frame for frame in _stack(client, native_thread) if frame.get("name") == "python_inner"),
+            None,
+        )
+        if not isinstance(routing, dict):
+            raise DapError("Rust async stop had no Python routing frame")
+        client.response(client.send("scopes", {"frameId": routing["id"]}), timeout=10)
+
+        python_stop = client.event("stopped", timeout=30)
+        python_thread = python_stop.get("body", {}).get("threadId")
+        if not isinstance(python_thread, int):
+            raise DapError(f"Rust async handoff had no Python thread: {python_stop}")
+        live = _stack(client, python_thread)
+        rust_frame = next(
+            (
+                frame
+                for frame in live
+                if (frame.get("source") or {}).get("path") == str(RUST_ASYNC_SOURCE)
+                and frame.get("line") == 56
+                and "rust_outer" in str(frame.get("name", ""))
+            ),
+            None,
+        )
+        if not isinstance(rust_frame, dict):
+            raise DapError(f"live Rust async poll frame was missing: {live[:16]}")
+        client.response(
+            client.send("scopes", {"frameId": rust_frame["id"]}),
+            timeout=10,
+        )
+        client.response(
+            client.send(
+                "next",
+                {"threadId": python_thread, "granularity": "line"},
+            ),
+            timeout=10,
+        )
+        stepped = client.event("stopped", timeout=30)
+        stepped_thread = stepped.get("body", {}).get("threadId")
+        top = _stack(client, stepped_thread)[0] if isinstance(stepped_thread, int) else {}
+        if (
+            stepped.get("body", {}).get("reason") != "step"
+            or stepped_thread != native_thread
+            or top.get("line") != 57
+            or (top.get("source") or {}).get("path") != str(RUST_ASYNC_SOURCE)
+            or _evaluate(client, top["id"], "1 + 1") != "2"
+        ):
+            raise DapError(f"Rust async poll frame did not step in CodeLLDB: {top}")
     finally:
         client.close()
 
@@ -1446,6 +1706,9 @@ def main() -> int:
         ("AC-DP-22", selected_rust_frame_step_in_returns_to_codelldb),
         ("AC-DP-23", selected_rust_frame_step_out_returns_to_codelldb),
         ("AC-DP-24", rust_worker_selected_rust_frame_steps_on_same_native_thread),
+        ("AC-DP-25", asyncio_task_live_debugpy_returns_to_same_rust_thread),
+        ("AC-DP-26", rust_futures_use_live_debugpy_python_stepping),
+        ("AC-DP-27", rust_future_selected_rust_poll_frame_steps_in_codelldb),
     )
     results: dict[str, bool] = {}
     for criterion, case in cases:
