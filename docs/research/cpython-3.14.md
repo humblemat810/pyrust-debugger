@@ -97,6 +97,24 @@ Automated coverage lives in
 Full debugger observations are in
 [the fixture results](fixture-results.md).
 
+### Secondary-interpreter tracing
+
+`sys.settrace` is attached to the current interpreter thread state, not merely
+to an interpreter identity. CPython may create a secondary interpreter on one
+OS thread and later execute it through `_interpreters.exec` on another.
+Installing a tracer only from `sitecustomize` therefore misses that later
+execution thread.
+
+The implemented bootstrap retains creation-time installation and wraps
+string-based `_interpreters.exec` in the main interpreter. The wrapper prefixes
+the submitted script with an interpreter-local tracer installation, so the
+actual execution thread owns the trace function before user code runs.
+`AC-DP-30` proves a source breakpoint and Step Over on that thread.
+
+This does not generalize to every embedding API. A C-created interpreter that
+migrates to an uninstrumented thread without passing through the wrapped entry
+point remains outside the proven scope.
+
 ## Compatibility analysis
 
 ### Private API

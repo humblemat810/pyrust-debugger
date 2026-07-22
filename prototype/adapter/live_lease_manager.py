@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 import time
 from typing import Any, Callable, Mapping
 
@@ -40,10 +40,20 @@ class _VariableRoute:
 class LiveLeaseManager:
     """Route live operations to a secondary interpreter without debugpy."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        emit_event: Callable[[str, Mapping[str, Any]], None],
+    ) -> None:
         self._root = root / "subinterpreter-live"
         self._root.mkdir(parents=True, exist_ok=True)
+        self._emit_event = emit_event
         self._lock = Lock()
+        self._breakpoints: dict[str, tuple[int, ...]] = {}
+        self._configuration_done = False
+        self._stop = False
+        self._seen_stops: set[Path] = set()
         self._leases: dict[int, _Lease] = {}
         self._frame_routes: dict[int, tuple[_Lease, int]] = {}
         self._frame_keys: dict[tuple[int, int], int] = {}
@@ -51,6 +61,42 @@ class LiveLeaseManager:
         self._next_frame = 1_925_000_000
         self._next_reference = 1_950_000_000
         self._generation = 0
+        self._write_breakpoints()
+        self._watcher = Thread(
+            target=self._watch_breakpoint_stops,
+            name="pyrust-subinterpreter-breakpoints",
+            daemon=True,
+        )
+        self._watcher.start()
+
+    @property
+    def registry_path(self) -> Path:
+        return self._root
+
+    def add_breakpoints(self, arguments: Mapping[str, Any]) -> None:
+        source = arguments.get("source")
+        path = source.get("path") if isinstance(source, dict) else None
+        raw_breakpoints = arguments.get("breakpoints")
+        if not isinstance(path, str) or not isinstance(raw_breakpoints, list):
+            return
+        lines = tuple(
+            item["line"]
+            for item in raw_breakpoints
+            if isinstance(item, dict)
+            and isinstance(item.get("line"), int)
+            and not isinstance(item["line"], bool)
+            and item["line"] > 0
+        )
+        with self._lock:
+            if lines:
+                self._breakpoints[path] = lines
+            else:
+                self._breakpoints.pop(path, None)
+        self._write_breakpoints()
+
+    def mark_configuration_done(self) -> None:
+        with self._lock:
+            self._configuration_done = True
 
     def owns_frame(self, frame_id: object) -> bool:
         if not isinstance(frame_id, int):
@@ -389,12 +435,102 @@ class LiveLeaseManager:
 
     def close(self) -> None:
         with self._lock:
+            self._stop = True
             process_ids = tuple(self._leases)
         for process_id in process_ids:
             try:
                 self.release(process_id)
             except LiveLeaseTransportError:
                 pass
+
+    def prepare_restart(self) -> None:
+        """Release active leases while preserving configured breakpoints."""
+
+        with self._lock:
+            process_ids = tuple(self._leases)
+        for process_id in process_ids:
+            try:
+                self.release(process_id)
+            except LiveLeaseTransportError:
+                pass
+        with self._lock:
+            self._frame_routes.clear()
+            self._frame_keys.clear()
+            self._variable_routes.clear()
+            self._seen_stops.clear()
+
+    def _write_breakpoints(self) -> None:
+        with self._lock:
+            records = [
+                {"path": path, "lines": list(lines)}
+                for path, lines in sorted(self._breakpoints.items())
+            ]
+        temporary = self._root / ".breakpoints.tmp"
+        temporary.write_text(
+            json.dumps({"breakpoints": records}, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary.replace(self._root / "breakpoints.json")
+
+    def _watch_breakpoint_stops(self) -> None:
+        while True:
+            with self._lock:
+                if self._stop:
+                    return
+                ready = self._configuration_done
+            if ready:
+                markers = tuple(self._root.glob("stopped-*.json"))
+                for marker in markers:
+                    if marker in self._seen_stops:
+                        continue
+                    self._seen_stops.add(marker)
+                    try:
+                        self._adopt_breakpoint_stop(marker)
+                    except LiveLeaseTransportError as error:
+                        self._emit_event(
+                            "output",
+                            {
+                                "category": "stderr",
+                                "output": (
+                                    "PyRust could not adopt a secondary-interpreter "
+                                    f"breakpoint: {error}\n"
+                                ),
+                            },
+                        )
+            time.sleep(0.005)
+
+    def _adopt_breakpoint_stop(self, marker: Path) -> None:
+        payload = _read_json(marker)
+        if payload is None:
+            raise LiveLeaseTransportError("breakpoint marker is malformed")
+        process_id = payload.get("pid")
+        native_thread_id = payload.get("threadId")
+        root = payload.get("root")
+        if (
+            not isinstance(process_id, int)
+            or process_id <= 0
+            or not isinstance(native_thread_id, int)
+            or native_thread_id <= 0
+            or not isinstance(root, str)
+        ):
+            raise LiveLeaseTransportError("breakpoint marker has invalid identity")
+        lease = self._wait_ready(process_id, native_thread_id, Path(root))
+        for frame in lease.frames:
+            raw_frame = frame.get("id")
+            if isinstance(raw_frame, int):
+                self._allocate_frame(lease, raw_frame)
+        with self._lock:
+            self._leases[process_id] = lease
+        self._emit_event(
+            "stopped",
+            {
+                "reason": "breakpoint",
+                "description": "Secondary-interpreter Python breakpoint",
+                "threadId": native_thread_id,
+                "systemProcessId": process_id,
+                "allThreadsStopped": False,
+            },
+        )
 
     def _wait_ready(
         self,

@@ -12,7 +12,7 @@
 | R8 | Process-memory permissions fail in containers | High | Medium | Detect errno, document `SYS_PTRACE`, native fallback | Phase 4 |
 | R9 | Dynamic Rust extension symbols do not bind | Medium | High | Debug profile, pending breakpoints, module-load tests | Phase 1 |
 | R10 | Helper latency makes stack UI feel broken | Medium | Medium | Cache per stop, persistent helper if measured necessary | Phase 4 |
-| R11 | Multiple interpreters make thread/frame ownership ambiguous | Low | High | Traverse all interpreter/thread-state lists; require one frame-identity match; route secondary frames to the threadless interpreter-local engine | AC-DP-29 |
+| R11 | Multiple interpreters make thread/frame ownership ambiguous | Low | High | Traverse all interpreter/thread-state lists; require one frame-identity match; route secondary frames to the threadless interpreter-local engine | AC-DP-29/30 |
 | R12 | Free-threaded CPython behaves differently | Medium | High | Explicitly detect and reject until tested | Release |
 | R13 | Two-adapter expansion deadlocks or double-continues | High | Critical | Separate future project; one execution owner in alpha | Future |
 | R14 | Licensing contamination from studied GPL prior art | Low | High | Independent implementation; no copied code; retain source notes | Ongoing |
@@ -29,6 +29,7 @@
 | R25 | DAP tests pass but the VS Code debug type or UI workflow is broken | Medium | High | Local wrapper extension, extension-host smoke test, and human Call Stack checklist | Human check passed |
 | R26 | Host VS Code, Dev Containers, or extension-test versions drift | Low | High | Record tested versions, pin the extension-host runner, and report host preflight versions | Automated pass |
 | R27 | Primitive local snapshot is unavailable or stale at a Python frame | Medium | Medium | Match frame name/path at the current stop; show locals unavailable on mismatch; retain native fallback and stale-ID checks | ADR 0005 acceptance |
+| R28 | A secondary interpreter executes on a different thread than the one that created it | Medium | High | Install tracing at same-thread initialization and wrap string-based `_interpreters.exec` so the exact execution thread is instrumented; keep arbitrary C-created thread migration out of scope | AC-DP-30 |
 
 ## Top three gates
 

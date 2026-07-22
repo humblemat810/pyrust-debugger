@@ -116,7 +116,7 @@ The slice is complete only when automated and manual tests prove:
 7. Thread, process, async, restart, and cross-language breakpoint handoff
    acceptance remain green.
 
-Automated evidence is `AC-DP-11` through `AC-DP-29`:
+Automated evidence is `AC-DP-11` through `AC-DP-30`:
 
 - direct and child-process Rust-stop to live-debugpy transfers;
 - a prior Python breakpoint followed by Python -> Rust -> Python ownership;
@@ -136,13 +136,17 @@ Automated evidence is `AC-DP-11` through `AC-DP-29`:
   multiple CPython interpreters; and
 - interpreter-local live scopes, evaluation, imports, assignment, `next`,
   Python-to-Python `stepIn`, `stepOut`, and continue for a secondary
-  interpreter reached from a Rust stop.
+  interpreter reached from a Rust stop; and
+- a direct secondary-interpreter Python source breakpoint, live evaluation,
+  and `next` on the same native TID.
 
 The last criterion proves that routing does not depend on names such as
 `rust_inner`, `rust_outer`, `rust_callback`, `python_inner`, or
 `python_outer`. `AC-DP-29` proves mixed-stack ownership and a live
-interpreter-local Python lease in a secondary interpreter. It does not prove
-arbitrary non-PyO3 FFI bridges or free-threaded CPython.
+interpreter-local Python lease in a secondary interpreter. `AC-DP-30` proves
+source-breakpoint entry for string-based `_interpreters.exec`. It does not
+prove arbitrary non-PyO3 FFI bridges, C-created interpreters that migrate to
+uninstrumented threads, or free-threaded CPython.
 
 ### Secondary Interpreter Boundary
 
@@ -154,7 +158,20 @@ threadless service entered through CPython 3.14 remote execution. The service
 holds the selected live frame and provides real Python operations until a
 continue or step relinquishes the lease.
 
-The secondary backend currently begins from a native stop and does not install
-Python source breakpoints. It supports Python-to-Python stepping; crossing from
-that backend into a new native call requires a future native breakpoint
-transaction.
+The secondary backend can begin from either a native stop or a Python source
+breakpoint. Source-breakpoint installation is proven for same-thread
+initialization and string-based `_interpreters.exec`, whose wrapper installs
+the tracer on the actual execution thread. It supports Python-to-Python
+stepping; crossing from that backend into a new native call requires a future
+native breakpoint transaction.
+
+Main-interpreter handoff uses a bounded enter/ready/release rendezvous. The
+target thread does not leave the selected Python frame before the debugpy stop
+has been resolved. Pause and helper-breakpoint events are serialized per
+process, pending events are retried instead of discarded, and duplicate events
+are ignored after exposure. A temporary next-statement breakpoint is queued
+without waiting on the native-stopped process and is restored after handoff.
+It catches the live Python caller if CPython does not execute the injected
+script before a fast native return; the returned native callee is necessarily
+absent from that fallback stack. `AC-DP-15` and `AC-DP-25`, plus focused
+manager tests, cover dynamic callables and repeated asyncio handoffs.

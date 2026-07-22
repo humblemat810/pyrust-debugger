@@ -9,14 +9,20 @@ subinterpreters.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import sys
+import threading
 import time
 from types import FrameType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 
 class LiveLeaseError(RuntimeError):
     """The selected live Python frame cannot be serviced."""
+
+
+_INTERPRETERS_EXEC_HOOK_INSTALLED = False
 
 
 def run_live_lease(
@@ -33,6 +39,163 @@ def run_live_lease(
     service.run()
 
 
+def install_subinterpreter_breakpoints(directory: str) -> None:
+    """Install a threadless source-breakpoint tracer in this interpreter."""
+
+    if isinstance(sys.gettrace(), _BreakpointTracer):
+        return
+    root = Path(directory)
+    root.mkdir(parents=True, exist_ok=True)
+    tracer = _BreakpointTracer(root)
+    sys.settrace(tracer)
+    threading.settrace(tracer)
+
+
+def install_subinterpreter_exec_hook(directory: str) -> None:
+    """Install tracing on the exact thread used by ``_interpreters.exec``."""
+
+    global _INTERPRETERS_EXEC_HOOK_INSTALLED
+    if _INTERPRETERS_EXEC_HOOK_INSTALLED:
+        return
+    try:
+        import _interpreters
+    except ImportError:
+        return
+    original_exec = _interpreters.exec
+    bootstrap = (
+        "from pyrust_stack.live_lease import "
+        "install_subinterpreter_breakpoints as _pyrust_install_breakpoints\n"
+        f"_pyrust_install_breakpoints({directory!r})\n"
+    )
+
+    def pyrust_exec(
+        interpreter: object,
+        code: object,
+        shared: object = None,
+        *,
+        restrict: bool = False,
+    ) -> object:
+        if isinstance(code, str):
+            code = bootstrap + code
+        if shared is None:
+            return original_exec(interpreter, code, restrict=restrict)
+        return original_exec(interpreter, code, shared, restrict=restrict)
+
+    _interpreters.exec = pyrust_exec
+    _INTERPRETERS_EXEC_HOOK_INSTALLED = True
+
+
+class _BreakpointTracer:
+    def __init__(self, root: Path) -> None:
+        self._root = root
+        self._config = root / "breakpoints.json"
+        self._config_mtime_ns = -1
+        self._next_refresh = 0.0
+        self._breakpoints: dict[str, frozenset[int]] = {}
+        self._module_path = str(Path(__file__).resolve())
+
+    def __call__(
+        self,
+        frame: FrameType,
+        event: str,
+        arg: object,
+    ) -> object:
+        del arg
+        if event != "line" or frame.f_code.co_filename == self._module_path:
+            return self
+        self._refresh()
+        lines = self._breakpoints.get(frame.f_code.co_filename)
+        if lines is None or frame.f_lineno not in lines:
+            return self
+        self._stop(frame)
+        return frame.f_trace
+
+    def _refresh(self) -> None:
+        now = time.monotonic()
+        if now < self._next_refresh:
+            return
+        self._next_refresh = now + 0.025
+        try:
+            modified = self._config.stat().st_mtime_ns
+        except OSError:
+            modified = -1
+        if modified == self._config_mtime_ns:
+            return
+        self._config_mtime_ns = modified
+        payload = _read_json(self._config)
+        raw_records = payload.get("breakpoints") if payload else None
+        records: dict[str, frozenset[int]] = {}
+        if isinstance(raw_records, list):
+            for record in raw_records:
+                if not isinstance(record, dict):
+                    continue
+                path = record.get("path")
+                raw_lines = record.get("lines")
+                if not isinstance(path, str) or not isinstance(raw_lines, list):
+                    continue
+                lines = frozenset(
+                    line
+                    for line in raw_lines
+                    if isinstance(line, int)
+                    and not isinstance(line, bool)
+                    and line > 0
+                )
+                if lines:
+                    records[path] = lines
+        self._breakpoints = records
+
+    def _stop(self, frame: FrameType) -> None:
+        process_id = os.getpid()
+        native_thread_id = threading.get_native_id()
+        active = self._root / f"active-{process_id}"
+        while True:
+            try:
+                active.mkdir()
+                break
+            except FileExistsError:
+                time.sleep(0.002)
+        nonce = time.time_ns()
+        stop_root = self._root / f"stop-{process_id}-{native_thread_id}-{nonce}"
+        stop_root.mkdir()
+        marker = self._root / f"stopped-{process_id}-{native_thread_id}-{nonce}.json"
+        sys.settrace(None)
+        frame.f_trace = None
+
+        def final_continue() -> None:
+            active.rmdir()
+            sys.settrace(self)
+
+        try:
+            _write_json(
+                marker,
+                {
+                    "pid": process_id,
+                    "threadId": native_thread_id,
+                    "root": str(stop_root),
+                    "path": frame.f_code.co_filename,
+                    "line": frame.f_lineno,
+                    "name": frame.f_code.co_name,
+                },
+            )
+            action = _LiveFrameService(
+                stop_root,
+                frame,
+                generation=1,
+                on_final_continue=final_continue,
+            ).run()
+        except BaseException:
+            try:
+                active.rmdir()
+            except OSError:
+                pass
+            raise
+        finally:
+            marker.unlink(missing_ok=True)
+        if action == "continue":
+            sys.settrace(self)
+            frame.f_trace = self
+
+
 class _LiveFrameService:
     def __init__(
         self,
@@ -40,10 +203,12 @@ class _LiveFrameService:
         selected: FrameType,
         *,
         generation: int,
+        on_final_continue: Callable[[], None] | None = None,
     ) -> None:
         self._root = root
         self._selected = selected
         self._generation = generation
+        self._on_final_continue = on_final_continue
         self._frames: dict[int, FrameType] = {}
         self._objects: dict[int, tuple[object, FrameType]] = {}
         self._next_object = 1
@@ -54,7 +219,7 @@ class _LiveFrameService:
             frame_id += 1
             frame = frame.f_back
 
-    def run(self) -> None:
+    def run(self) -> str:
         _write_json(
             self._root / "ready.json",
             {
@@ -100,7 +265,9 @@ class _LiveFrameService:
                 }
             _write_json(self._root / f"response-{sequence}.json", response)
             if release:
-                return
+                if command == "continue" and self._on_final_continue is not None:
+                    self._on_final_continue()
+                return command
 
     def _dispatch(
         self,
@@ -149,6 +316,7 @@ class _LiveFrameService:
                     self._root,
                     frame,
                     generation=self._generation + 1,
+                    on_final_continue=self._on_final_continue,
                 ).run()
                 return None
             return tracer

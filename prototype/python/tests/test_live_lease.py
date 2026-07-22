@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
 from threading import Thread
 import time
@@ -11,6 +14,41 @@ from pyrust_stack.live_lease import run_live_lease
 
 
 class LiveLeaseTests(unittest.TestCase):
+    def test_interpreters_exec_installs_trace_on_execution_thread(self) -> None:
+        with TemporaryDirectory() as directory:
+            environment = dict(os.environ)
+            python_path = str(Path(__file__).resolve().parents[1])
+            inherited = environment.get("PYTHONPATH")
+            environment["PYTHONPATH"] = (
+                python_path
+                if not inherited
+                else f"{python_path}{os.pathsep}{inherited}"
+            )
+            script = (
+                "import _interpreters\n"
+                "from pyrust_stack.live_lease import "
+                "install_subinterpreter_exec_hook\n"
+                f"install_subinterpreter_exec_hook({directory!r})\n"
+                "interpreter = _interpreters.create()\n"
+                "try:\n"
+                "    result = _interpreters.exec(\n"
+                "        interpreter,\n"
+                "        \"import sys; print(sys.gettrace() is not None)\",\n"
+                "    )\n"
+                "    assert result is None\n"
+                "finally:\n"
+                "    _interpreters.destroy(interpreter)\n"
+            )
+            completed = subprocess.run(
+                [sys.executable, "-c", script],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env=environment,
+            )
+            self.assertEqual(completed.stdout.strip(), "True")
+
     def test_live_frame_evaluation_import_and_assignment(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)

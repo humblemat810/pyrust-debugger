@@ -128,6 +128,10 @@ Docker socket mount inside the Dev Container is required.
    terminal.
 3. Open `research/fixtures/rust_outer/src/main.rs` in the VS Code editor and
    set a source breakpoint at line 8.
+4. For the subinterpreter check, open
+   `tests/acceptance/subinterpreter_payload.py` and set a Python breakpoint at
+   line 23. The corresponding native breakpoint is
+   `research/fixtures/subinterpreter_outer/src/lib.rs:48`.
 
 ## Remote Troubleshooting
 

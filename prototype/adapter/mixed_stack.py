@@ -220,7 +220,14 @@ class MixedStackHooks(ProxyHooks):
                         body,
                     ),
                 )
-                self._live_lease_manager = LiveLeaseManager(registry_path)
+                self._live_lease_manager = LiveLeaseManager(
+                    registry_path,
+                    emit_event=lambda event, body: self._emit_live_lease_event(
+                        context,
+                        event,
+                        body,
+                    ),
+                )
             if self._child_only_mode:
                 self._child_only_process = self._start_child_only_parent(
                     arguments,
@@ -687,6 +694,8 @@ class MixedStackHooks(ProxyHooks):
             )
         if self._python_manager is not None:
             self._python_manager.prepare_restart()
+        if self._live_lease_manager is not None:
+            self._live_lease_manager.prepare_restart()
         try:
             response = context.request_downstream(
                 "restart",
@@ -719,7 +728,11 @@ class MixedStackHooks(ProxyHooks):
             and isinstance(source_path, str)
             and source_path.lower().endswith((".py", ".pyw"))
         ):
-            python_manager.add_breakpoints(request.get("arguments") or {})
+            arguments = request.get("arguments") or {}
+            python_manager.add_breakpoints(arguments)
+            live_manager = self._live_lease_manager
+            if live_manager is not None:
+                live_manager.add_breakpoints(arguments)
             breakpoints = (request.get("arguments") or {}).get("breakpoints")
             count = len(breakpoints) if isinstance(breakpoints, list) else 0
             return LocalResponse(
@@ -727,7 +740,10 @@ class MixedStackHooks(ProxyHooks):
                     "breakpoints": [
                         {
                             "verified": True,
-                            "message": "Queued for registered debugpy processes",
+                            "message": (
+                                "Queued for debugpy and secondary-interpreter "
+                                "Python backends"
+                            ),
                         }
                         for _ in range(count)
                     ]
@@ -915,6 +931,8 @@ class MixedStackHooks(ProxyHooks):
         del request, context
         if self._python_manager is not None:
             self._python_manager.mark_configuration_done()
+        if self._live_lease_manager is not None:
+            self._live_lease_manager.mark_configuration_done()
         if self._process_manager is not None:
             self._process_manager.mark_configuration_done()
         if self._child_only_mode:
@@ -1861,6 +1879,7 @@ class MixedStackHooks(ProxyHooks):
             {
                 "PYRUST_DEBUGPY_ENABLE": "1",
                 "PYRUST_DEBUGPY_REGISTRY": str(registry),
+                "PYRUST_LIVE_REGISTRY": str(registry / "subinterpreter-live"),
                 "PYRUST_DEBUGPY_WAIT_FOR_CLIENT": "1",
                 "PYRUST_DEBUGPY_PYTHON": sys.executable,
                 "PYDEVD_DISABLE_FILE_VALIDATION": "1",
@@ -2000,6 +2019,38 @@ class MixedStackHooks(ProxyHooks):
                     }
         context.send_event(event, body)
 
+    def _emit_live_lease_event(
+        self,
+        context: ProxyContext,
+        event: str,
+        body: Mapping[str, Any],
+    ) -> None:
+        if event == "output":
+            context.send_event(event, body)
+            return
+        if event != "stopped":
+            context.send_event(event, body)
+            return
+        process_id = body.get("systemProcessId")
+        thread_id = body.get("threadId")
+        if not isinstance(process_id, int) or not isinstance(thread_id, int):
+            context.send_output(
+                "PyRust ignored a secondary-interpreter stop with invalid "
+                "process or thread identity\n",
+                category="stderr",
+            )
+            return
+        context.state.bind_python_thread(
+            process_id,
+            thread_id,
+            name="secondary-interpreter Python thread",
+        )
+        context.state.on_stopped({"body": dict(body)}, owner="python")
+        with self._lock:
+            self._console_frame_id = None
+            self._stopped_thread_id = thread_id
+        context.send_event("stopped", body)
+
     def _is_python_handoff_process(self, process_id: int) -> bool:
         with self._lock:
             return any(key[0] == process_id for key in self._python_handoffs)
@@ -2101,6 +2152,7 @@ class MixedStackHooks(ProxyHooks):
                 native_thread_id=synthetic.thread_id,
                 target_name=name,
                 target_path=path,
+                target_line=line,
             )
             context.send_output(
                 "PyRust is switching this process from CodeLLDB to debugpy; "

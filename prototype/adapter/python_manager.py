@@ -95,12 +95,20 @@ class PythonProcessManager:
             "f'handoff-entered-{_pyrust_os.getpid()}'\n"
             "_pyrust_ready = _pyrust_registry / "
             "f'handoff-ready-{_pyrust_os.getpid()}'\n"
+            "_pyrust_release = _pyrust_registry / "
+            "f'handoff-release-{_pyrust_os.getpid()}'\n"
             "_pyrust_entered.touch()\n"
             "_pyrust_deadline = _pyrust_time.monotonic() + 5.0\n"
             "while not _pyrust_ready.exists() and "
             "_pyrust_time.monotonic() < _pyrust_deadline:\n"
             "    _pyrust_time.sleep(0.005)\n"
-            "_pyrust_debugpy.breakpoint()\n",
+            "if not _pyrust_release.exists():\n"
+            "    _pyrust_debugpy.breakpoint()\n"
+            "_pyrust_deadline = _pyrust_time.monotonic() + 30.0\n"
+            "while not _pyrust_release.exists() and "
+            "_pyrust_time.monotonic() < _pyrust_deadline:\n"
+            "    _pyrust_time.sleep(0.005)\n"
+            "_pyrust_release.unlink(missing_ok=True)\n",
             encoding="utf-8",
         )
         self._state = state
@@ -122,6 +130,9 @@ class PythonProcessManager:
         self._handoff_exposed: set[int] = set()
         self._handoff_user_resuming: set[int] = set()
         self._handoff_resolving: set[int] = set()
+        self._handoff_pending_stops: dict[int, dict[str, Any]] = {}
+        self._handoff_entry_breakpoints: dict[int, _HandoffStep] = {}
+        self._handoff_completed_targets: set[tuple[int, str, str]] = set()
         self._handoff_steps: dict[int, _HandoffStep] = {}
         self._next_thread_id = _THREAD_ID_START
         self._next_frame_id = _FRAME_ID_START
@@ -250,6 +261,9 @@ class PythonProcessManager:
             self._handoff_exposed.clear()
             self._handoff_user_resuming.clear()
             self._handoff_resolving.clear()
+            self._handoff_pending_stops.clear()
+            self._handoff_entry_breakpoints.clear()
+            self._handoff_completed_targets.clear()
             self._handoff_steps.clear()
         for session in sessions:
             session.transport.close()
@@ -726,6 +740,7 @@ class PythonProcessManager:
         native_thread_id: int,
         target_name: str,
         target_path: str,
+        target_line: int,
     ) -> None:
         """Queue a debugpy stop on the selected CPython native thread."""
 
@@ -742,15 +757,55 @@ class PythonProcessManager:
                     f"debugpy process {process_id} is unavailable"
                 )
             time.sleep(0.025)
+        target_key = (process_id, target_name, target_path)
         with self._lock:
+            repeated_target = target_key in self._handoff_completed_targets
             self._handoff_targets[process_id] = (target_name, target_path)
             self._handoff_exposed.discard(process_id)
             self._handoff_user_resuming.discard(process_id)
+            self._handoff_pending_stops.pop(process_id, None)
+            self._handoff_entry_breakpoints.pop(process_id, None)
             self._handoff_steps.pop(process_id, None)
+            debugpy_thread_id = session.native_threads.get(native_thread_id)
+        destination = (
+            _next_python_statement_line(target_path, target_line)
+            if repeated_target
+            else None
+        )
+        if destination is not None:
+            record = self._breakpoint_record_with_temporary_line(
+                target_path,
+                destination,
+            )
+            with self._lock:
+                self._handoff_entry_breakpoints[process_id] = _HandoffStep(
+                    "handoff",
+                    debugpy_thread_id or 0,
+                    target_name,
+                    target_path,
+                    destination,
+                    record,
+                )
+            session.transport.request_async(
+                "setBreakpoints",
+                record,
+                on_error=lambda error: self._emit_event(
+                    "output",
+                    {
+                        "category": "stderr",
+                        "output": (
+                            "PyRust could not arm the Python handoff fallback "
+                            f"breakpoint for process {process_id}: {error}\n"
+                        ),
+                    },
+                ),
+            )
         ready_marker = self._registry_path / f"handoff-ready-{process_id}"
         entered_marker = self._registry_path / f"handoff-entered-{process_id}"
+        release_marker = self._registry_path / f"handoff-release-{process_id}"
         ready_marker.unlink(missing_ok=True)
         entered_marker.unlink(missing_ok=True)
+        release_marker.unlink(missing_ok=True)
         try:
             queue_remote_debug_script(
                 process_id,
@@ -761,12 +816,18 @@ class PythonProcessManager:
                 require_main_interpreter=True,
             )
         except RemoteDebugError as error:
+            self._restore_entry_breakpoint(process_id)
             raise PythonTransportError(
                 f"could not queue targeted CPython 3.14 handoff: {error}"
             ) from error
         Thread(
             target=self._wait_and_queue_handoff_pause,
-            args=(session, entered_marker, ready_marker),
+            args=(
+                session,
+                entered_marker,
+                ready_marker,
+                debugpy_thread_id,
+            ),
             name=f"pyrust-debugpy-handoff-ready-{process_id}",
             daemon=True,
         ).start()
@@ -776,6 +837,7 @@ class PythonProcessManager:
         session: _PythonSession,
         entered_marker: Path,
         ready_marker: Path,
+        debugpy_thread_id: int | None,
     ) -> None:
         if not session.resume_ready.wait(10):
             self._emit_event(
@@ -806,17 +868,28 @@ class PythonProcessManager:
                 ready_marker.touch()
                 return
             time.sleep(0.005)
-        self._queue_handoff_pause(session, ready_marker)
+        self._queue_handoff_pause(
+            session,
+            ready_marker,
+            debugpy_thread_id,
+        )
 
     def _queue_handoff_pause(
         self,
         session: _PythonSession,
         ready_marker: Path,
+        debugpy_thread_id: int | None,
     ) -> None:
         try:
             session.transport.request_async(
                 "pause",
-                {"threadId": "*"},
+                {
+                    "threadId": (
+                        debugpy_thread_id
+                        if debugpy_thread_id is not None
+                        else "*"
+                    )
+                },
                 on_error=lambda error: self._emit_event(
                     "output",
                     {
@@ -901,6 +974,9 @@ class PythonProcessManager:
             self._handoff_exposed.clear()
             self._handoff_user_resuming.clear()
             self._handoff_resolving.clear()
+            self._handoff_pending_stops.clear()
+            self._handoff_entry_breakpoints.clear()
+            self._handoff_completed_targets.clear()
             self._handoff_steps.clear()
         for session in sessions:
             session.transport.close()
@@ -1046,6 +1122,7 @@ class PythonProcessManager:
             with self._lock:
                 step = self._handoff_steps.get(process_id)
                 targeted = process_id in self._handoff_targets
+                exposed = process_id in self._handoff_exposed
                 resolving = process_id in self._handoff_resolving
                 if (targeted or step is not None) and not resolving:
                     self._handoff_resolving.add(process_id)
@@ -1059,7 +1136,15 @@ class PythonProcessManager:
                     ).start()
                 return
             if targeted:
-                if not resolving:
+                if resolving:
+                    if not exposed:
+                        with self._lock:
+                            self._handoff_pending_stops[process_id] = body
+                    return
+                if exposed:
+                    with self._lock:
+                        self._handoff_resolving.discard(process_id)
+                else:
                     Thread(
                         target=self._emit_targeted_handoff_stop,
                         args=(process_id, body),
@@ -1122,6 +1207,13 @@ class PythonProcessManager:
                 self._handoff_exposed.discard(process_id)
                 self._handoff_user_resuming.discard(process_id)
                 self._handoff_resolving.discard(process_id)
+                self._handoff_pending_stops.pop(process_id, None)
+                self._handoff_entry_breakpoints.pop(process_id, None)
+                self._handoff_completed_targets = {
+                    key
+                    for key in self._handoff_completed_targets
+                    if key[0] != process_id
+                }
                 self._handoff_steps.pop(process_id, None)
             if exited_session is not None:
                 exited_session.transport.close()
@@ -1230,90 +1322,132 @@ class PythonProcessManager:
         process_id: int,
         body: dict[str, Any],
     ) -> None:
-        raw_thread_id = body.get("threadId")
-        try:
-            session = self._require_session(process_id)
-            with self._lock:
-                target = self._handoff_targets.get(process_id)
-            if target is not None:
-                target_name, target_path = target
-                target_thread_id: int | None = None
-                deadline = time.monotonic() + 10
-                while target_thread_id is None:
-                    response = session.transport.request("threads")
-                    threads = (response.get("body") or {}).get("threads")
-                    if isinstance(threads, list):
-                        for thread in threads:
-                            if not isinstance(thread, dict):
-                                continue
-                            candidate = thread.get("id")
-                            if (
-                                not isinstance(candidate, int)
-                                or isinstance(candidate, bool)
-                                or candidate <= 0
-                            ):
-                                continue
-                            stack = session.transport.request(
-                                "stackTrace",
-                                {
-                                    "threadId": candidate,
-                                    "startFrame": 0,
-                                    "levels": 200,
-                                },
-                            )
-                            frames = (stack.get("body") or {}).get("stackFrames")
-                            if not isinstance(frames, list):
-                                continue
-                            if any(
-                                isinstance(frame, dict)
-                                and frame.get("name") == target_name
-                                and isinstance(frame.get("source"), dict)
-                                and frame["source"].get("path") == target_path
-                                for frame in frames
-                            ):
-                                target_thread_id = candidate
-                                break
-                    if target_thread_id is not None:
-                        raw_thread_id = target_thread_id
-                        break
-                    if time.monotonic() >= deadline:
-                        raise PythonTransportError(
-                            "debugpy stopped without the selected Python frame "
-                            f"{target_name!r} in {target_path!r}"
-                        )
-                    time.sleep(0.01)
-            if (
-                not isinstance(raw_thread_id, int)
-                or isinstance(raw_thread_id, bool)
-                or raw_thread_id <= 0
-            ):
-                raise PythonTransportError(
-                    f"debugpy process {process_id} stopped without a thread"
+        while True:
+            try:
+                self._resolve_targeted_handoff_stop(process_id, body)
+            except PythonTransportError as error:
+                with self._lock:
+                    pending = self._handoff_pending_stops.pop(process_id, None)
+                    if pending is None:
+                        self._handoff_resolving.discard(process_id)
+                if pending is not None:
+                    body = pending
+                    continue
+                (
+                    self._registry_path / f"handoff-release-{process_id}"
+                ).touch()
+                self._restore_entry_breakpoint(process_id)
+                self._emit_event(
+                    "output",
+                    {
+                        "category": "stderr",
+                        "output": (
+                            "PyRust could not resolve the selected Python "
+                            f"handoff thread for process {process_id}: {error}\n"
+                        ),
+                    },
                 )
-            virtual_thread_id = self._record_thread(
-                process_id,
-                raw_thread_id,
-            )
-            body["threadId"] = virtual_thread_id
-            body["systemProcessId"] = process_id
-            self._state.on_stopped({"body": body}, owner="python")
+                return
             with self._lock:
-                self._handoff_exposed.add(process_id)
-            self._emit_event("stopped", body)
-        except PythonTransportError as error:
-            self._emit_event(
-                "output",
-                {
-                    "category": "stderr",
-                    "output": (
-                        "PyRust could not resolve the selected Python handoff "
-                        f"thread for process {process_id}: {error}\n"
-                    ),
-                },
-            )
-        finally:
-            with self._lock:
+                # A second pause/breakpoint event for the same handoff is a
+                # duplicate once the selected frame has been resolved.
+                self._handoff_pending_stops.pop(process_id, None)
                 self._handoff_resolving.discard(process_id)
+            return
+
+    def _resolve_targeted_handoff_stop(
+        self,
+        process_id: int,
+        body: dict[str, Any],
+    ) -> None:
+        raw_thread_id = body.get("threadId")
+        session = self._require_session(process_id)
+        with self._lock:
+            target = self._handoff_targets.get(process_id)
+        if target is not None:
+            target_name, target_path = target
+            target_thread_id: int | None = None
+            deadline = time.monotonic() + 10
+            while target_thread_id is None:
+                response = session.transport.request("threads")
+                threads = (response.get("body") or {}).get("threads")
+                if isinstance(threads, list):
+                    for thread in threads:
+                        if not isinstance(thread, dict):
+                            continue
+                        candidate = thread.get("id")
+                        if (
+                            not isinstance(candidate, int)
+                            or isinstance(candidate, bool)
+                            or candidate <= 0
+                        ):
+                            continue
+                        stack = session.transport.request(
+                            "stackTrace",
+                            {
+                                "threadId": candidate,
+                                "startFrame": 0,
+                                "levels": 200,
+                            },
+                        )
+                        frames = (stack.get("body") or {}).get("stackFrames")
+                        if not isinstance(frames, list):
+                            continue
+                        if any(
+                            isinstance(frame, dict)
+                            and frame.get("name") == target_name
+                            and isinstance(frame.get("source"), dict)
+                            and frame["source"].get("path") == target_path
+                            for frame in frames
+                        ):
+                            target_thread_id = candidate
+                            break
+                if target_thread_id is not None:
+                    raw_thread_id = target_thread_id
+                    break
+                if time.monotonic() >= deadline:
+                    raise PythonTransportError(
+                        "debugpy stopped without the selected Python frame "
+                        f"{target_name!r} in {target_path!r}"
+                    )
+                time.sleep(0.01)
+        if (
+            not isinstance(raw_thread_id, int)
+            or isinstance(raw_thread_id, bool)
+            or raw_thread_id <= 0
+        ):
+            raise PythonTransportError(
+                f"debugpy process {process_id} stopped without a thread"
+            )
+        virtual_thread_id = self._record_thread(
+            process_id,
+            raw_thread_id,
+        )
+        body["threadId"] = virtual_thread_id
+        body["systemProcessId"] = process_id
+        self._restore_entry_breakpoint(process_id)
+        (self._registry_path / f"handoff-release-{process_id}").touch()
+        self._state.on_stopped({"body": body}, owner="python")
+        with self._lock:
+            self._handoff_exposed.add(process_id)
+            target = self._handoff_targets.get(process_id)
+            if target is not None:
+                self._handoff_completed_targets.add(
+                    (process_id, target[0], target[1])
+                )
+            # Publish the stop only after the previous resolver generation is
+            # fully closed, so a fast client cannot start the next handoff
+            # while this one still appears active internally.
+            self._handoff_pending_stops.pop(process_id, None)
+            self._handoff_resolving.discard(process_id)
+        self._emit_event("stopped", body)
+
+    def _restore_entry_breakpoint(self, process_id: int) -> None:
+        with self._lock:
+            entry = self._handoff_entry_breakpoints.pop(process_id, None)
+        if entry is None:
+            return
+        self._restore_handoff_breakpoint(process_id, entry)
 
     def _record_thread(
         self,

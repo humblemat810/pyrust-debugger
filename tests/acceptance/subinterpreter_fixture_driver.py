@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import _interpreters
-import os
 import threading
 from pathlib import Path
 
@@ -11,27 +10,12 @@ from pathlib import Path
 def main() -> None:
     interpreter = _interpreters.create()
     errors: list[BaseException] = []
-    library = os.environ["PYRUST_SUBINTERP_LIBRARY"]
-    source = f"""
-import importlib.util
-
-spec = importlib.util.spec_from_file_location("pyrust_subinterp", {library!r})
-pyrust_subinterp = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(pyrust_subinterp)
-
-def finalize_subinterpreter(value):
-    final_label = "python-leaf"
-    return value
-
-def subinterpreter_worker(value):
-    interpreter_label = "secondary-interpreter"
-    native_result = pyrust_subinterp.dispatch_payload(value)
-    return finalize_subinterpreter(native_result)
-
-subinterpreter_worker(35)
-"""
+    payload = Path(__file__).with_name("subinterpreter_payload.py").resolve()
     script = (
-        f"exec(compile({source!r}, {str(Path(__file__).resolve())!r}, 'exec'))"
+        f"_path = {str(payload)!r}\n"
+        "with open(_path, encoding='utf-8') as _stream:\n"
+        "    _source = _stream.read()\n"
+        "exec(compile(_source, _path, 'exec'))\n"
     )
 
     def run() -> None:

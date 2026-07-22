@@ -33,6 +33,19 @@ value = 35
 8. `next`, Python-to-Python `stepIn`, `stepOut`, and continue remain on the
    same native TID and preserve live values.
 
+## AC-DP-30
+
+At the Python breakpoint in `subinterpreter_payload.py`:
+
+1. The secondary interpreter stops directly on
+   `interpreter_label = "secondary-interpreter"`.
+2. The stop is owned by the interpreter-local Python engine, not debugpy.
+3. The top frame reports the real payload source path and configured line.
+4. Evaluating `value * 2` returns `70`.
+5. Step Over reaches the following `native_result` line on the same native
+   TID.
+6. Continue releases the lease and lets the fixture terminate normally.
+
 ## Commands
 
 ```bash
@@ -48,13 +61,17 @@ PYTHONPATH=prototype/python .venv/bin/python -m unittest \
 
 1. Build or reinstall the current VSIX.
 2. Select **PyRust: Python Subinterpreter (live)**.
-3. Set a Rust breakpoint at
+3. Set a Python breakpoint at
+   `tests/acceptance/subinterpreter_payload.py:23`.
+4. Start debugging. Confirm `value * 2` returns `70`, then Step Over to line
+   24 and Continue.
+5. Run again with a Rust breakpoint at
    `research/fixtures/subinterpreter_outer/src/lib.rs:48`.
-4. Start debugging. At `calculate_leaf`, select
+6. At `calculate_leaf`, select
    `subinterpreter_worker` in the mixed stack.
-5. The stack refreshes to a live Python-owned stop. Evaluate `value * 2`,
+7. The stack refreshes to a live Python-owned stop. Evaluate `value * 2`,
    execute `import math`, then evaluate `math.factorial(5)`.
-6. Change local `value` to `41`, then use Step Over, Step Into, and Step Out.
+8. Change local `value` to `41`, then use Step Over, Step Into, and Step Out.
    The Python leaf is `finalize_subinterpreter`, and every stop remains on the
    same native thread.
 
@@ -62,5 +79,7 @@ PYTHONPATH=prototype/python .venv/bin/python -m unittest \
 
 debugpy 1.8.20 is not subinterpreter-safe in the tested CPython 3.14.6
 environment. PyRust does not import debugpy there. The interpreter-local engine
-is live but begins from a native stop; it does not yet implement Python source
-breakpoints inside the secondary interpreter.
+supports native-stop transfer and direct Python source breakpoints for
+same-thread initialization and string-based `_interpreters.exec`. It does not
+yet guarantee source-breakpoint installation for arbitrary C-created
+interpreters that migrate to an uninstrumented OS thread.

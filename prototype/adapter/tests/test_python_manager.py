@@ -12,6 +12,7 @@ from prototype.adapter.python_manager import (
     PythonProcessManager,
     read_debugpy_registry,
 )
+from prototype.adapter.python_transport import PythonTransportError
 from prototype.adapter.state import ProxySessionState
 
 
@@ -168,6 +169,78 @@ class FailingDebugpyTransport(FakeDebugpyTransport):
 
 
 class PythonProcessManagerTests(unittest.TestCase):
+    def test_targeted_handoff_ignores_duplicate_stop_after_exposure(self) -> None:
+        emitted: list[tuple[str, Mapping[str, Any]]] = []
+        with TemporaryDirectory() as directory:
+            manager = PythonProcessManager(
+                registry_path=Path(directory),
+                state=ProxySessionState(),
+                emit_event=lambda event, body: emitted.append((event, body)),
+                transport_factory=lambda handler: FakeDebugpyTransport(handler),
+            )
+            try:
+                with manager._lock:
+                    manager._handoff_targets[700] = (
+                        "python_worker",
+                        "/workspace/worker.py",
+                    )
+                    manager._handoff_exposed.add(700)
+                manager._handle_event(
+                    700,
+                    {
+                        "type": "event",
+                        "event": "stopped",
+                        "body": {"threadId": 701, "reason": "pause"},
+                    },
+                )
+                self.assertEqual(emitted, [])
+                with manager._lock:
+                    self.assertNotIn(700, manager._handoff_resolving)
+                    self.assertNotIn(700, manager._handoff_pending_stops)
+            finally:
+                manager.close()
+
+    def test_targeted_handoff_retries_a_pending_stopped_event(self) -> None:
+        with TemporaryDirectory() as directory:
+            manager = PythonProcessManager(
+                registry_path=Path(directory),
+                state=ProxySessionState(),
+                emit_event=lambda _event, _body: None,
+                transport_factory=lambda handler: FakeDebugpyTransport(handler),
+            )
+            calls: list[dict[str, Any]] = []
+
+            def resolve(process_id: int, body: dict[str, Any]) -> None:
+                calls.append(body)
+                if len(calls) == 1:
+                    with manager._lock:
+                        manager._handoff_pending_stops[process_id] = {
+                            "threadId": 702,
+                        }
+                    raise PythonTransportError("first stop raced")
+
+            try:
+                with manager._lock:
+                    manager._handoff_resolving.add(700)
+                with patch.object(
+                    manager,
+                    "_resolve_targeted_handoff_stop",
+                    side_effect=resolve,
+                ):
+                    manager._emit_targeted_handoff_stop(
+                        700,
+                        {"threadId": 701},
+                    )
+                self.assertEqual(
+                    calls,
+                    [{"threadId": 701}, {"threadId": 702}],
+                )
+                with manager._lock:
+                    self.assertNotIn(700, manager._handoff_resolving)
+                    self.assertNotIn(700, manager._handoff_pending_stops)
+            finally:
+                manager.close()
+
     def test_registry_removes_dead_process_records(self) -> None:
         with TemporaryDirectory() as directory:
             registry = Path(directory)
@@ -364,6 +437,8 @@ class PythonProcessManagerTests(unittest.TestCase):
                 created[0].calls[-1],
                 ("pause", {"threadId": 701}),
             )
+            with manager._lock:
+                manager._sessions[700].native_threads[1701] = 701
             with patch(
                 "prototype.adapter.python_manager.queue_remote_debug_script",
                 side_effect=lambda *_args, **_kwargs: (
@@ -372,13 +447,14 @@ class PythonProcessManagerTests(unittest.TestCase):
             ) as remote_exec:
                 manager.arm_targeted_handoff(
                     700,
-                    native_thread_id=700,
+                    native_thread_id=1701,
                     target_name="python_worker",
                     target_path="/workspace/worker.py",
+                    target_line=24,
                 )
             remote_exec.assert_called_once_with(
                 700,
-                700,
+                1701,
                 registry / "pyrust-debugpy-handoff.py",
                 expected_name="python_worker",
                 expected_path="/workspace/worker.py",
@@ -386,13 +462,13 @@ class PythonProcessManagerTests(unittest.TestCase):
             )
             deadline = time.monotonic() + 1
             while (
-                created[0].calls[-1] != ("pause", {"threadId": "*"})
+                created[0].calls[-1] != ("pause", {"threadId": 701})
                 and time.monotonic() < deadline
             ):
                 time.sleep(0.005)
             self.assertEqual(
                 created[0].calls[-1],
-                ("pause", {"threadId": "*"}),
+                ("pause", {"threadId": 701}),
             )
             manager.step_thread(
                 "stepIn",

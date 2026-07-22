@@ -123,10 +123,13 @@ secondary-interpreter frame transfers the selected native thread to a
 synchronous interpreter-local engine. That engine provides live scopes,
 object values, arbitrary evaluation and imports, assignment, `next`,
 Python-to-Python `stepIn`, `stepOut`, and continue without starting daemon
-threads. Python source breakpoints inside a secondary interpreter are not yet
-provided; the live lease begins from a native stop. Free-threaded CPython and
-suspended async task/future graphs remain outside the proven scope. See
-[the documentation index](docs/README.md).
+threads. It also supports direct Python source breakpoints when the secondary
+interpreter executes a string through `_interpreters.exec`; installation occurs
+on the exact execution thread rather than only on the interpreter-creation
+thread. Arbitrary C-created interpreters that later move to an uninstrumented
+OS thread are not yet covered. Free-threaded CPython and suspended async
+task/future graphs remain outside the proven scope. See [the documentation
+index](docs/README.md).
 
 ## Full Python Debugging
 

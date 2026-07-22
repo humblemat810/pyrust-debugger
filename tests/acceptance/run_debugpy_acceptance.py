@@ -35,6 +35,9 @@ ARBITRARY_BOUNDARY_DRIVER = (
 SUBINTERPRETER_DRIVER = (
     ROOT / "tests" / "acceptance" / "subinterpreter_fixture_driver.py"
 )
+SUBINTERPRETER_PYTHON_SOURCE = (
+    ROOT / "tests" / "acceptance" / "subinterpreter_payload.py"
+)
 SUBINTERPRETER_FIXTURE = (
     ROOT / "research" / "fixtures" / "subinterpreter_outer"
 )
@@ -92,6 +95,7 @@ CRITERIA = (
     "AC-DP-27",
     "AC-DP-28",
     "AC-DP-29",
+    "AC-DP-30",
 )
 
 
@@ -133,6 +137,22 @@ def _set_breakpoint(client: DapClient, source: Path, line: int) -> None:
     breakpoints = response.get("body", {}).get("breakpoints")
     if not isinstance(breakpoints, list) or len(breakpoints) != 1:
         raise DapError(f"debugpy breakpoint response was malformed: {response}")
+
+
+def _source_line(source: Path, needle: str) -> int:
+    matches = [
+        line_number
+        for line_number, line in enumerate(
+            source.read_text(encoding="utf-8").splitlines(),
+            start=1,
+        )
+        if needle in line
+    ]
+    if len(matches) != 1:
+        raise DapError(
+            f"expected one {needle!r} line in {source}, found {matches}"
+        )
+    return matches[0]
 
 
 def _stack(client: DapClient, thread_id: int) -> list[dict[str, Any]]:
@@ -1339,6 +1359,12 @@ def asyncio_task_live_debugpy_returns_to_same_rust_thread() -> None:
 
 
 def rust_futures_use_live_debugpy_python_stepping() -> None:
+    def stage(label: str, operation: Callable[[], Any]) -> Any:
+        try:
+            return operation()
+        except DapError as error:
+            raise DapError(f"Rust-future handoff {label}: {error}") from error
+
     client = DapClient(proxy_command())
     try:
         initialize(client)
@@ -1355,7 +1381,11 @@ def rust_futures_use_live_debugpy_python_stepping() -> None:
 
         observed: set[tuple[str, str]] = set()
         for index, command in enumerate(("next", "stepOut")):
-            rust_stop = client.event("stopped", timeout=30)
+            future = index + 1
+            rust_stop = stage(
+                f"future {future} native stop",
+                lambda: client.event("stopped", timeout=30),
+            )
             native_thread = rust_stop.get("body", {}).get("threadId")
             if not isinstance(native_thread, int):
                 raise DapError(f"Rust future stop had no native thread: {rust_stop}")
@@ -1371,12 +1401,18 @@ def rust_futures_use_live_debugpy_python_stepping() -> None:
             )
             if not isinstance(routing, dict):
                 raise DapError("Rust future had no selectable Python coroutine")
-            client.response(
-                client.send("scopes", {"frameId": routing["id"]}),
-                timeout=10,
+            stage(
+                f"future {future} scopes transfer",
+                lambda: client.response(
+                    client.send("scopes", {"frameId": routing["id"]}),
+                    timeout=10,
+                ),
             )
 
-            python_stop = client.event("stopped", timeout=30)
+            python_stop = stage(
+                f"future {future} Python stop",
+                lambda: client.event("stopped", timeout=30),
+            )
             python_thread = python_stop.get("body", {}).get("threadId")
             if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
                 raise DapError(f"Rust future was not debugpy-owned: {python_stop}")
@@ -1395,8 +1431,17 @@ def rust_futures_use_live_debugpy_python_stepping() -> None:
                     _evaluate(client, frame_id, "worker_value"),
                 )
             )
-            client.response(client.send(command, {"threadId": python_thread}), timeout=10)
-            stepped = client.event("stopped", timeout=30)
+            stage(
+                f"future {future} {command} response",
+                lambda: client.response(
+                    client.send(command, {"threadId": python_thread}),
+                    timeout=10,
+                ),
+            )
+            stepped = stage(
+                f"future {future} {command} stop",
+                lambda: client.event("stopped", timeout=30),
+            )
             stepped_thread = stepped.get("body", {}).get("threadId")
             if not isinstance(stepped_thread, int) or stepped_thread < 1_600_000_000:
                 raise DapError(f"Rust future {command} left debugpy: {stepped}")
@@ -1632,7 +1677,7 @@ def subinterpreter_frame_uses_interpreter_local_live_engine() -> None:
                 for frame in frames
                 if frame.get("name") == "subinterpreter_worker"
                 and (frame.get("source") or {}).get("path")
-                == str(SUBINTERPRETER_DRIVER)
+                == str(SUBINTERPRETER_PYTHON_SOURCE)
             ),
             None,
         )
@@ -1660,7 +1705,7 @@ def subinterpreter_frame_uses_interpreter_local_live_engine() -> None:
                 for frame in _stack(client, live_thread)
                 if frame.get("name") == "subinterpreter_worker"
                 and (frame.get("source") or {}).get("path")
-                == str(SUBINTERPRETER_DRIVER)
+                == str(SUBINTERPRETER_PYTHON_SOURCE)
             ),
             None,
         )
@@ -1760,7 +1805,7 @@ def subinterpreter_frame_uses_interpreter_local_live_engine() -> None:
         if (
             leaf_frame.get("name") != "finalize_subinterpreter"
             or (leaf_frame.get("source") or {}).get("path")
-            != str(SUBINTERPRETER_DRIVER)
+            != str(SUBINTERPRETER_PYTHON_SOURCE)
         ):
             raise DapError(
                 f"subinterpreter stepIn did not reach the Python leaf: {leaf_frame}"
@@ -1794,6 +1839,88 @@ def subinterpreter_frame_uses_interpreter_local_live_engine() -> None:
             )
         client.response(
             client.send("continue", {"threadId": live_thread}),
+            timeout=10,
+        )
+    finally:
+        client.close()
+
+
+def subinterpreter_python_source_breakpoint_is_live() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=PYTHON,
+            args=[str(SUBINTERPRETER_DRIVER)],
+            env={"PYRUST_SUBINTERP_LIBRARY": str(SUBINTERPRETER_LIBRARY)},
+        )
+        client.event("initialized", timeout=10)
+        breakpoint_line = _source_line(
+            SUBINTERPRETER_PYTHON_SOURCE,
+            'interpreter_label = "secondary-interpreter"',
+        )
+        _set_breakpoint(
+            client,
+            SUBINTERPRETER_PYTHON_SOURCE,
+            breakpoint_line,
+        )
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        stopped = client.event("stopped", timeout=30)
+        body = stopped.get("body", {})
+        thread_id = body.get("threadId")
+        if (
+            body.get("reason") != "breakpoint"
+            or not isinstance(thread_id, int)
+            or thread_id <= 0
+        ):
+            raise DapError(
+                f"secondary-interpreter Python breakpoint did not stop: {stopped}"
+            )
+        frame = _stack(client, thread_id)[0]
+        frame_id = frame.get("id")
+        if (
+            frame.get("name") != "subinterpreter_worker"
+            or (frame.get("source") or {}).get("path")
+            != str(SUBINTERPRETER_PYTHON_SOURCE)
+            or frame.get("line") != breakpoint_line
+            or not isinstance(frame_id, int)
+        ):
+            raise DapError(
+                f"secondary-interpreter breakpoint frame was wrong: {frame}"
+            )
+        if _evaluate(client, frame_id, "value * 2") != "70":
+            raise DapError(
+                "secondary-interpreter source breakpoint was not live"
+            )
+        client.response(
+            client.send("scopes", {"frameId": frame_id}),
+            timeout=10,
+        )
+        client.response(
+            client.send("next", {"threadId": thread_id}),
+            timeout=10,
+        )
+        stepped = client.event("stopped", timeout=15)
+        if (
+            stepped.get("body", {}).get("reason") != "step"
+            or stepped.get("body", {}).get("threadId") != thread_id
+        ):
+            raise DapError(
+                f"secondary-interpreter source next failed: {stepped}"
+            )
+        next_frame = _stack(client, thread_id)[0]
+        if (
+            next_frame.get("name") != "subinterpreter_worker"
+            or next_frame.get("line") != breakpoint_line + 1
+        ):
+            raise DapError(
+                f"secondary-interpreter next reached the wrong frame: {next_frame}"
+            )
+        client.response(
+            client.send("continue", {"threadId": thread_id}),
             timeout=10,
         )
     finally:
@@ -2061,6 +2188,10 @@ def main() -> int:
         (
             "AC-DP-29",
             subinterpreter_frame_uses_interpreter_local_live_engine,
+        ),
+        (
+            "AC-DP-30",
+            subinterpreter_python_source_breakpoint_is_live,
         ),
     )
     results: dict[str, bool] = {}

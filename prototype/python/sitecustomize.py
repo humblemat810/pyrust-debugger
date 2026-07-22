@@ -96,11 +96,20 @@ def _bootstrap() -> None:
     if os.environ.get("PYRUST_DEBUGPY_ENABLE") != "1":
         return
     registry_value = os.environ.get("PYRUST_DEBUGPY_REGISTRY")
-    if (
-        not registry_value
-        or _is_debugpy_internal_process()
-        or not _is_main_interpreter()
-    ):
+    if not registry_value or _is_debugpy_internal_process():
+        return
+    live_registry = os.environ.get("PYRUST_LIVE_REGISTRY")
+    if live_registry:
+        from pyrust_stack.live_lease import (
+            install_subinterpreter_breakpoints,
+            install_subinterpreter_exec_hook,
+        )
+
+        if _is_main_interpreter():
+            install_subinterpreter_exec_hook(live_registry)
+        else:
+            install_subinterpreter_breakpoints(live_registry)
+    if not _is_main_interpreter():
         return
 
     # A process has one debugpy server. Secondary interpreters must not start

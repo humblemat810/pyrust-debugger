@@ -250,7 +250,9 @@ interpreter. Zero or multiple matches fail closed.
 
 `AC-DP-29` proves this selection with a multi-phase `pyo3-ffi` Rust extension
 declared `Py_MOD_PER_INTERPRETER_GIL_SUPPORTED`. The secondary-interpreter
-Python caller and primitive locals are merged above the Rust leaf.
+Python caller and primitive locals are merged above the Rust leaf. `AC-DP-30`
+proves a direct Python source breakpoint in that interpreter, live evaluation,
+and `next` on the same native TID.
 
 The process-wide debugpy 1.8.20 server does not safely provide a live frame in
 that secondary interpreter. PyRust therefore does not queue the debugpy
@@ -266,8 +268,36 @@ coordinator emits one refreshed Python-owned stop with new virtual frame and
 variable IDs. `next`, Python-to-Python `stepIn`, and `stepOut` use
 interpreter-local tracing and return on the same OS thread. This avoids the
 target abort observed when debugpy was imported inside the secondary
-interpreter. Source breakpoints in a secondary interpreter remain outside the
-current backend; entry begins from a native stop.
+interpreter.
+
+For direct source breakpoints, the main interpreter's bootstrap wraps
+string-based `_interpreters.exec` calls with a small interpreter-local
+installation prefix. This is required because interpreter creation and
+execution may happen on different OS threads, while `sys.settrace` belongs to
+the current thread state. The target thread synchronously enters the same live
+frame service when a configured line is reached. A per-process lease serializes
+simultaneous secondary-interpreter stops.
+
+This hook does not claim universal coverage for arbitrary C-created
+interpreters that migrate to an OS thread without executing an instrumented
+entry point. Same-thread initialization and string-based `_interpreters.exec`
+are the proven paths.
+
+Main-interpreter transfers use a targeted three-marker rendezvous. The
+interpreter-local helper announces entry, waits for the coordinator to arm
+debugpy, and stays physically inside the selected Python frame until the
+coordinator publishes a release marker. The coordinator pauses the mapped
+debugpy thread rather than an arbitrary process thread when that identity is
+known. If debugpy produces both a pause stop and a helper-breakpoint stop, one
+resolver serializes them, retries the pending stop after a failed match, and
+suppresses duplicates once the handoff is exposed. This prevents fast
+coroutines and dynamically selected calls from escaping between CodeLLDB and
+debugpy ownership. A temporary debugpy breakpoint is also queued
+asynchronously at the next executable Python statement. It is normally removed
+when the exact-frame rendezvous succeeds; if CPython delays the injected script
+until after a fast native call returns, the temporary breakpoint provides a
+live Python-owned fallback instead of losing the process. In that fallback
+stop, the completed native callee is no longer part of the physical stack.
 
 ### Python -> Rust expected shape
 
