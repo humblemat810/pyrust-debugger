@@ -12,6 +12,8 @@ fn rust_callback() -> PyResult<()> {
 // Keep the outer Rust frames live while Python calls back into Rust.
 #[inline(never)]
 fn rust_outer() -> PyResult<()> {
+    let mut outer_value = 30_i64;
+    std::hint::black_box(&mut outer_value);
     Python::attach(|py| {
         // Embedded CPython does not necessarily import sitecustomize during
         // initialization. Load PyRust's opt-in debugpy bootstrap explicitly.

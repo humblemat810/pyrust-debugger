@@ -605,9 +605,10 @@ class MixedStackHooksTests(unittest.TestCase):
             self.context,
         )
 
+        self.assertEqual(forwarded["arguments"]["consoleMode"], "evaluate")
         self.assertEqual(
-            forwarded["arguments"],
-            {"consoleMode": "evaluate"},
+            forwarded["arguments"]["env"]["PYRUST_DEBUGPY_ENABLE"],
+            "1",
         )
 
     def test_python_locals_scopes_and_safe_evaluation(self) -> None:

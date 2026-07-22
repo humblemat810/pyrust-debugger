@@ -163,8 +163,8 @@
               },
               "pyrustPythonDebug": {
                 "type": "boolean",
-                "default": false,
-                "description": "Enable debugpy for full Python breakpoints, variables, calls, imports, and evaluation at Python-owned stops."
+                "default": true,
+                "description": "Use debugpy for real Python frame ownership. Disable only for legacy snapshot diagnostics; doing so does not satisfy mixed-frame guarantees."
               },
               "pyrustPythonDebugRegistry": {
                 "type": "string",

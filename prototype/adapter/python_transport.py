@@ -20,6 +20,7 @@ class PythonTransportError(RuntimeError):
 
 
 AsyncErrorHandler = Callable[[PythonTransportError], None]
+AsyncCompleteHandler = Callable[[], None]
 
 
 @dataclass
@@ -29,6 +30,7 @@ class _PendingRequest:
     response: Message | None = None
     error: BaseException | None = None
     async_error_handler: AsyncErrorHandler | None = None
+    async_complete_handler: AsyncCompleteHandler | None = None
 
 
 class DebugpyTransport:
@@ -159,6 +161,7 @@ class DebugpyTransport:
         arguments: Mapping[str, Any] | None = None,
         *,
         on_error: AsyncErrorHandler,
+        on_complete: AsyncCompleteHandler | None = None,
     ) -> None:
         """Send a tracked request without blocking a second debug engine."""
 
@@ -172,6 +175,7 @@ class DebugpyTransport:
             command=command,
             complete=Event(),
             async_error_handler=on_error,
+            async_complete_handler=on_complete,
         )
         with self._pending_lock:
             self._pending[sequence] = pending
@@ -275,6 +279,8 @@ class DebugpyTransport:
                                             )
                                         )
                                     )
+                                elif pending.async_complete_handler is not None:
+                                    pending.async_complete_handler()
                                 continue
                             pending.response = message
                             pending.complete.set()

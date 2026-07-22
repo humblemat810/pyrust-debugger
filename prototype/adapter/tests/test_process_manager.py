@@ -93,7 +93,23 @@ class FakeChildTransport:
                     "variablesReference": 0,
                 },
             }
-        if command in {"continue", "next", "stepIn", "stepOut", "pause"}:
+        if command in {
+            "continue",
+            "next",
+            "stepIn",
+            "stepOut",
+            "pause",
+            "setVariable",
+            "setExpression",
+        }:
+            if command in {"setVariable", "setExpression"}:
+                return {
+                    "success": True,
+                    "body": {
+                        "value": payload.get("value", ""),
+                        "variablesReference": 0,
+                    },
+                }
             return {"success": True, "body": {"allThreadsContinued": True}}
         raise AssertionError(f"unexpected fake request {command!r}")
 

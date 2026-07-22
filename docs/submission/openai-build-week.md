@@ -7,7 +7,7 @@
 ## One-Line Pitch
 
 PyRust makes mixed CPython 3.14 and Rust debugging legible in VS Code by
-combining CodeLLDB's native stack with read-only Python stack recovery and an
+combining CodeLLDB's native stack with reversible debugpy frame ownership and an
 honest process-and-thread tree.
 
 ## Problem
@@ -23,11 +23,11 @@ thread, coroutine, or child process for another kind of execution context.
 PyRust is a local VS Code debugger prototype for Linux x86_64 that:
 
 - launches the target through CodeLLDB;
-- recovers CPython 3.14 frames from the stopped target without executing Python
-  in that target;
+- discovers CPython 3.14 frames and transfers selected Python frames to real
+  debugpy ownership;
 - returns one mixed Python/Rust Call Stack through DAP;
-- supplies read-only primitive Python locals and a bounded snapshot expression
-  subset;
+- supplies live variables, imports, evaluation, and mutation through the
+  selected frame's real debugger;
 - adds **PyRust Process Tree**, a custom Debug-sidebar view for real processes
   and native threads;
 - keeps thread and process grouping honest: processes own threads, sibling
@@ -99,11 +99,10 @@ replaced technical verification.
 
 - Linux x86_64 only.
 - CPython 3.14 and the pinned CodeLLDB environment only.
-- Rust breakpoints are CodeLLDB-owned. Opt-in debugpy launch configurations
-  support Python breakpoints.
-- Python expressions use full debugpy evaluation at Python-owned stops and a
-  read-only captured local snapshot at Rust-owned stops.
-- Cross-language stepping is not supported.
+- Rust breakpoints are CodeLLDB-owned and Python breakpoints are debugpy-owned.
+- Foreign frames use reversible engine leases before interaction.
+- Direct statically identifiable `rust_*` calls support Python-to-Rust Step
+  Into; dynamic call discovery remains limited.
 - The VSIX is a local prototype, not a Marketplace product.
 - A custom Process Tree cannot take ownership of VS Code's built-in yellow
   active-stack-frame marker.

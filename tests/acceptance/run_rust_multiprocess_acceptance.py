@@ -48,6 +48,7 @@ def _start_fixture(registry: Path) -> tuple[DapClient, dict[str, Any]]:
             },
             "pyrustChildRegistryPath": str(registry),
             "pyrustProcessMode": "children",
+            "pyrustPythonDebug": False,
         },
     )
     client.event("initialized", timeout=10)

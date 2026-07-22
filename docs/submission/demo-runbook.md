@@ -95,8 +95,8 @@ Use [75-Second Demo Narration](narration.md) if a concise voiceover is useful.
 - Do not claim arbitrary cross-language stepping. The implemented
   Python-to-Rust Step Into recognizes conservative direct `rust_*` calls and
   creates a temporary native function breakpoint automatically.
-- Do not enter imports or calls in a synthetic Python frame at a Rust stop;
-  use a `(debugpy)` launch configuration for full Python expressions.
+- After selecting Python from a Rust stop, wait for the stack to refresh to
+  the debugpy-owned stop before entering imports or calls.
 - Keep the recording moving, but the manual process/thread launch now permits a
   one-hour breakpoint hold and must not terminate during normal inspection.
 

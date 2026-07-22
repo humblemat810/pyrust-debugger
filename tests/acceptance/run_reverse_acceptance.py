@@ -94,6 +94,7 @@ def launch_arguments(
         "terminal": "console",
         "consoleMode": "evaluate",
         "sourceLanguages": ["rust"],
+        "pyrustPythonDebug": False,
     }
     if helper_command is not None:
         arguments["pyrustHelperCommand"] = helper_command
@@ -223,8 +224,8 @@ def rp_source_navigation() -> None:
     try:
         frames = result["frames"]
         assert_source(frame_by_name(frames, "rust_callback"), RUST_SOURCE, 9)
-        assert_source(frame_by_name(frames, "rust_outer"), RUST_SOURCE, 15)
-        assert_source(frame_by_name(frames, "main"), RUST_SOURCE, 34)
+        assert_source(frame_by_name(frames, "rust_outer"), RUST_SOURCE, 17)
+        assert_source(frame_by_name(frames, "main"), RUST_SOURCE, 36)
         assert_source(frame_by_name(frames, "python_inner"), PYTHON_SOURCE, 4)
         assert_source(frame_by_name(frames, "python_outer"), PYTHON_SOURCE, 9)
     finally:

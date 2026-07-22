@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from copy import deepcopy
+from dataclasses import dataclass
 import importlib
 import json
 import os
@@ -13,7 +14,7 @@ import shlex
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from typing import Any, Mapping
 
 from .child_transport import ChildTransportError
@@ -54,6 +55,18 @@ class PythonExpressionError(ValueError):
     """A request cannot be evaluated from a frozen Python local snapshot."""
 
 
+@dataclass
+class _NativeLeaseFrame:
+    process_id: int
+    native_thread_id: int
+    python_thread_id: int
+    name: str
+    path: str
+    line: int
+    instruction_pointer_reference: str
+    frame_id: int | None = None
+
+
 class MixedStackHooks(ProxyHooks):
     """Merge one CPython stack into either supported fixture stack."""
 
@@ -77,6 +90,16 @@ class MixedStackHooks(ProxyHooks):
         self._restart_arguments: dict[str, Any] | None = None
         self._function_breakpoints: list[dict[str, Any]] = []
         self._temporary_native_step_target: str | None = None
+        self._instruction_breakpoints: list[dict[str, Any]] = []
+        self._temporary_native_return_process: int | None = None
+        self._python_handoffs: set[tuple[int, int]] = set()
+        self._native_maintenance: dict[int, Event] = {}
+        self._native_suppress_continued: dict[int, Event] = {}
+        self._native_active: dict[int, tuple[int, int]] = {}
+        self._native_lease_frames: dict[int, _NativeLeaseFrame] = {}
+        self._native_lease_issued: set[int] = set()
+        self._native_lease_next = 1_900_000_000
+        self._source_root = Path.cwd()
 
     def on_launch(
         self,
@@ -90,7 +113,7 @@ class MixedStackHooks(ProxyHooks):
         child_registry = arguments.pop("pyrustChildRegistryPath", None)
         process_mode = arguments.pop("pyrustProcessMode", "native")
         thread_mode = arguments.pop("pyrustThreadMode", "all")
-        python_debug = arguments.pop("pyrustPythonDebug", False)
+        python_debug = arguments.pop("pyrustPythonDebug", True)
         python_debug_registry = arguments.pop("pyrustPythonDebugRegistry", None)
 
         if helper_command is not None and not isinstance(helper_command, str):
@@ -139,6 +162,19 @@ class MixedStackHooks(ProxyHooks):
             self._child_only_mode = process_mode == "children"
             self._restart_arguments = None
             self._temporary_native_step_target = None
+            self._instruction_breakpoints.clear()
+            self._temporary_native_return_process = None
+            self._python_handoffs.clear()
+            self._native_maintenance.clear()
+            self._native_suppress_continued.clear()
+            self._native_active.clear()
+            self._native_lease_frames.clear()
+            self._native_lease_issued.clear()
+            self._source_root = Path(
+                arguments.get("cwd")
+                if isinstance(arguments.get("cwd"), str)
+                else Path.cwd()
+            ).resolve()
             if process_metadata is not None:
                 context.state.set_default_process_metadata(*process_metadata)
             if self._process_manager is not None:
@@ -206,9 +242,64 @@ class MixedStackHooks(ProxyHooks):
         outgoing["arguments"] = arguments
         return outgoing
 
-    def on_stopped(self, event: Message, context: ProxyContext) -> Message:
+    def on_stopped(
+        self,
+        event: Message,
+        context: ProxyContext,
+    ) -> Message | None:
         self._restore_function_breakpoints(context)
         thread_id = (event.get("body") or {}).get("threadId")
+        process_id = (event.get("body") or {}).get("systemProcessId")
+        if not isinstance(process_id, int) and isinstance(thread_id, int):
+            process_id = context.state.process_id_for_thread(thread_id)
+        native_return = self._restore_instruction_breakpoints(
+            process_id if isinstance(process_id, int) else None,
+            context,
+        )
+        if native_return:
+            event = deepcopy(event)
+            body = dict(event.get("body") or {})
+            body["reason"] = "step"
+            body["description"] = "Returned to the selected Rust frame"
+            event["body"] = body
+        if isinstance(process_id, int):
+            with self._lock:
+                maintenance = self._native_maintenance.get(process_id)
+            if maintenance is not None:
+                maintenance.set()
+                return None
+        if (
+            isinstance(process_id, int)
+            and isinstance(thread_id, int)
+            and self._is_python_handoff_process(process_id)
+        ):
+            manager = self._process_manager
+            if manager is not None and manager.owns_thread(thread_id):
+                Thread(
+                    target=self._continue_child_handoff,
+                    args=(manager, thread_id, process_id),
+                    name=f"pyrust-python-handoff-{process_id}",
+                    daemon=True,
+                ).start()
+            else:
+                try:
+                    response = context.request_downstream(
+                        "continue",
+                        {"threadId": thread_id, "singleThread": True},
+                        timeout=10,
+                    )
+                    if response.get("success") is True:
+                        context.state.on_continued(
+                            {
+                                "body": {
+                                    "threadId": thread_id,
+                                    "systemProcessId": process_id,
+                                }
+                            }
+                        )
+                except Exception:
+                    pass
+            return None
         with self._lock:
             self._stopped_thread_id = (
                 thread_id
@@ -220,7 +311,27 @@ class MixedStackHooks(ProxyHooks):
             self._console_frame_id = None
         return event
 
-    def on_continued(self, event: Message, context: ProxyContext) -> Message:
+    def on_continued(
+        self,
+        event: Message,
+        context: ProxyContext,
+    ) -> Message | None:
+        thread_id = (event.get("body") or {}).get("threadId")
+        process_id = (event.get("body") or {}).get("systemProcessId")
+        if not isinstance(process_id, int) and isinstance(thread_id, int):
+            process_id = context.state.process_id_for_thread(thread_id)
+        if isinstance(process_id, int):
+            with self._lock:
+                continued = self._native_suppress_continued.pop(process_id, None)
+                if continued is not None:
+                    continued.set()
+                    return None
+                self._native_active.pop(process_id, None)
+                self._native_lease_frames = {
+                    frame_id: route
+                    for frame_id, route in self._native_lease_frames.items()
+                    if route.process_id != process_id
+                }
         with self._lock:
             self._stopped_thread_id = None
             self._console_frame_id = None
@@ -248,6 +359,9 @@ class MixedStackHooks(ProxyHooks):
         python_manager = self._python_manager
         if python_manager is not None and python_manager.owns_thread(thread_id):
             assert isinstance(thread_id, int)
+            process_id = context.state.process_id_for_thread(thread_id)
+            if isinstance(process_id, int):
+                self._release_native_lease(process_id, context)
             try:
                 response = python_manager.continue_thread(
                     thread_id,
@@ -306,9 +420,24 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         thread_id = (request.get("arguments") or {}).get("threadId")
+        with self._lock:
+            selected_frame_id = self._console_frame_id
+            selected_native = self._native_lease_frames.get(selected_frame_id)
+        if (
+            selected_native is not None
+            and thread_id == selected_native.python_thread_id
+        ):
+            return self._step_from_native_lease(
+                selected_native,
+                request,
+                context,
+            )
         python_manager = self._python_manager
         if python_manager is not None and python_manager.owns_thread(thread_id):
             assert isinstance(thread_id, int)
+            process_id = context.state.process_id_for_thread(thread_id)
+            if isinstance(process_id, int):
+                self._release_native_lease(process_id, context)
             if request.get("command") == "stepIn":
                 self._prepare_native_step_target(
                     python_manager,
@@ -352,6 +481,22 @@ class MixedStackHooks(ProxyHooks):
                 else []
             )
             self._temporary_native_step_target = None
+        return None
+
+    def on_set_instruction_breakpoints(
+        self,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        del context
+        breakpoints = (request.get("arguments") or {}).get("breakpoints")
+        with self._lock:
+            self._instruction_breakpoints = (
+                [dict(item) for item in breakpoints if isinstance(item, dict)]
+                if isinstance(breakpoints, list)
+                else []
+            )
+            self._temporary_native_return_process = None
         return None
 
     def on_pause_request(
@@ -483,6 +628,9 @@ class MixedStackHooks(ProxyHooks):
             python_manager is not None
             and python_manager.variable_route(reference) is not None
         ):
+            route = python_manager.variable_route(reference)
+            assert route is not None
+            self._release_native_lease(route.process_id, context)
             assert isinstance(reference, int)
             try:
                 response = python_manager.set_variable(
@@ -492,14 +640,31 @@ class MixedStackHooks(ProxyHooks):
             except PythonTransportError as error:
                 return LocalResponse(success=False, message=str(error))
             return LocalResponse(body=dict(response.get("body") or {}))
+        child_manager = self._process_manager
+        if (
+            child_manager is not None
+            and child_manager.variable_route(reference) is not None
+        ):
+            assert isinstance(reference, int)
+            try:
+                response = child_manager.set_variable(
+                    reference,
+                    request.get("arguments") or {},
+                )
+            except ChildTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
         if context.synthetic_frames.get(reference) is not None:
-            return LocalResponse(
-                success=False,
-                message=(
-                    "Python locals inside a Rust-owned stop are read-only "
-                    "snapshots; live assignment requires the CPython bridge"
-                ),
-            )
+            handoff = self._handoff_snapshot_to_debugpy(reference, context)
+            if handoff is not None and handoff.success:
+                return LocalResponse(
+                    success=False,
+                    message=(
+                        "Python frame transferred to debugpy; retry assignment "
+                        "on the refreshed live frame"
+                    ),
+                )
+            return handoff
         return None
 
     def on_set_expression(
@@ -508,12 +673,44 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         frame_id = (request.get("arguments") or {}).get("frameId")
+        native_lease = (
+            self._native_lease_frames.get(frame_id)
+            if isinstance(frame_id, int)
+            else None
+        )
+        if native_lease is not None:
+            try:
+                native_id = self._acquire_native_lease(native_lease, context)
+                arguments = dict(request.get("arguments") or {})
+                arguments["frameId"] = native_id
+                child_manager = self._process_manager
+                response = (
+                    child_manager.set_expression(native_id, arguments)
+                    if child_manager is not None
+                    and child_manager.native_frame_route(native_id) is not None
+                    else context.request_downstream(
+                        "setExpression",
+                        arguments,
+                        timeout=10,
+                    )
+                )
+            except (ChildTransportError, PythonTransportError, TimeoutError) as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
+        if isinstance(frame_id, int) and frame_id in self._native_lease_issued:
+            return LocalResponse(
+                success=False,
+                message="Rust frame is no longer valid for this debug stop",
+            )
         python_manager = self._python_manager
         if (
             python_manager is not None
             and python_manager.native_frame_route(frame_id) is not None
         ):
             assert isinstance(frame_id, int)
+            route = python_manager.native_frame_route(frame_id)
+            assert route is not None
+            self._release_native_lease(route.process_id, context)
             try:
                 response = python_manager.set_expression(
                     frame_id,
@@ -523,13 +720,16 @@ class MixedStackHooks(ProxyHooks):
                 return LocalResponse(success=False, message=str(error))
             return LocalResponse(body=dict(response.get("body") or {}))
         if self._current_python_frame_id(frame_id, context) is not None:
-            return LocalResponse(
-                success=False,
-                message=(
-                    "Python frames inside a Rust-owned stop are read-only "
-                    "snapshots; live assignment requires the CPython bridge"
-                ),
-            )
+            handoff = self._handoff_snapshot_to_debugpy(frame_id, context)
+            if handoff is not None and handoff.success:
+                return LocalResponse(
+                    success=False,
+                    message=(
+                        "Python frame transferred to debugpy; retry assignment "
+                        "on the refreshed live frame"
+                    ),
+                )
+            return handoff
         return None
 
     def on_configuration_done(
@@ -581,12 +781,42 @@ class MixedStackHooks(ProxyHooks):
         if isinstance(frame_id, int) and not isinstance(frame_id, bool):
             with self._lock:
                 self._console_frame_id = frame_id
+        native_lease = (
+            self._native_lease_frames.get(frame_id)
+            if isinstance(frame_id, int)
+            else None
+        )
+        if native_lease is not None:
+            try:
+                native_id = self._acquire_native_lease(native_lease, context)
+                manager = self._process_manager
+                response = (
+                    manager.scopes(native_id)
+                    if manager is not None
+                    and manager.native_frame_route(native_id) is not None
+                    else context.request_downstream(
+                        "scopes",
+                        {"frameId": native_id},
+                        timeout=10,
+                    )
+                )
+            except (ChildTransportError, PythonTransportError, TimeoutError) as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
+        if isinstance(frame_id, int) and frame_id in self._native_lease_issued:
+            return LocalResponse(
+                success=False,
+                message="Rust frame is no longer valid for this debug stop",
+            )
         python_manager = self._python_manager
         if (
             python_manager is not None
             and python_manager.native_frame_route(frame_id) is not None
         ):
             assert isinstance(frame_id, int)
+            route = python_manager.native_frame_route(frame_id)
+            assert route is not None
+            self._release_native_lease(route.process_id, context)
             try:
                 response = python_manager.scopes(frame_id)
             except PythonTransportError as error:
@@ -603,6 +833,9 @@ class MixedStackHooks(ProxyHooks):
         frame = self._current_python_frame_id(frame_id, context)
         if frame is None:
             return None
+        handoff = self._handoff_snapshot_to_debugpy(frame_id, context)
+        if handoff is not None:
+            return handoff
         locals_snapshot = frame.get("locals")
         if not isinstance(locals_snapshot, dict):
             return LocalResponse(
@@ -645,6 +878,9 @@ class MixedStackHooks(ProxyHooks):
             python_manager is not None
             and python_manager.variable_route(reference) is not None
         ):
+            route = python_manager.variable_route(reference)
+            assert route is not None
+            self._release_native_lease(route.process_id, context)
             try:
                 response = python_manager.variables(reference)
             except PythonTransportError as error:
@@ -660,6 +896,9 @@ class MixedStackHooks(ProxyHooks):
         synthetic = context.synthetic_frames.get(reference)
         if synthetic is None:
             return None
+        handoff = self._handoff_snapshot_to_debugpy(reference, context)
+        if handoff is not None:
+            return handoff
         frame = synthetic.value
         if not isinstance(frame, dict):
             return LocalResponse(
@@ -690,12 +929,39 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         frame_id = self._console_frame_id_for(request)
+        native_lease = (
+            self._native_lease_frames.get(frame_id)
+            if isinstance(frame_id, int)
+            else None
+        )
+        if native_lease is not None:
+            try:
+                native_id = self._acquire_native_lease(native_lease, context)
+                arguments = dict(request.get("arguments") or {})
+                arguments["frameId"] = native_id
+                manager = self._process_manager
+                response = (
+                    manager.evaluate(native_id, arguments)
+                    if manager is not None
+                    and manager.native_frame_route(native_id) is not None
+                    else context.request_downstream(
+                        "evaluate",
+                        arguments,
+                        timeout=10,
+                    )
+                )
+            except (ChildTransportError, PythonTransportError, TimeoutError) as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=dict(response.get("body") or {}))
         python_manager = self._python_manager
         if (
             python_manager is not None
             and python_manager.native_frame_route(frame_id) is not None
         ):
             assert isinstance(frame_id, int)
+            route = python_manager.native_frame_route(frame_id)
+            assert route is not None
+            self._release_native_lease(route.process_id, context)
             try:
                 response = python_manager.evaluate(
                     frame_id,
@@ -715,6 +981,9 @@ class MixedStackHooks(ProxyHooks):
         frame = self._current_python_frame_id(frame_id, context)
         if frame is None:
             return None
+        handoff = self._handoff_snapshot_to_debugpy(frame_id, context)
+        if handoff is not None:
+            return handoff
         locals_snapshot = frame.get("locals")
         if not isinstance(locals_snapshot, dict):
             return LocalResponse(
@@ -768,7 +1037,22 @@ class MixedStackHooks(ProxyHooks):
                 response = python_manager.stack_trace(thread_id, arguments)
             except PythonTransportError as error:
                 return LocalResponse(success=False, message=str(error))
-            return LocalResponse(body=dict(response.get("body") or {}))
+            body = dict(response.get("body") or {})
+            frames = body.get("stackFrames")
+            if isinstance(frames, list):
+                try:
+                    native_frames = self._capture_native_lease_frames(
+                        python_manager,
+                        thread_id,
+                        context,
+                    )
+                except (ChildTransportError, PythonTransportError, TimeoutError):
+                    native_frames = []
+                if native_frames:
+                    merged = [*frames, *native_frames]
+                    body["stackFrames"] = merged
+                    body["totalFrames"] = len(merged)
+            return LocalResponse(body=body)
         child_process = (
             context.state.process_id_for_thread(thread_id)
             if manager is not None and manager.owns_thread(thread_id)
@@ -1445,7 +1729,8 @@ class MixedStackHooks(ProxyHooks):
     ) -> None:
         message: Message = {"body": dict(body)}
         if event == "stopped":
-            self.on_stopped(message, context)
+            if self.on_stopped(message, context) is None:
+                return
         elif event == "continued":
             self.on_continued(message, context)
         context.send_event(event, body)
@@ -1457,8 +1742,450 @@ class MixedStackHooks(ProxyHooks):
         body: Mapping[str, Any],
     ) -> None:
         if event == "stopped":
+            process_id = body.get("systemProcessId")
+            if isinstance(process_id, int):
+                with self._lock:
+                    self._python_handoffs = {
+                        key for key in self._python_handoffs if key[0] != process_id
+                    }
             self._restore_function_breakpoints(context)
+        elif event == "continued":
+            process_id = body.get("systemProcessId")
+            if isinstance(process_id, int):
+                with self._lock:
+                    self._native_active.pop(process_id, None)
+                    self._native_lease_frames = {
+                        frame_id: route
+                        for frame_id, route in self._native_lease_frames.items()
+                        if route.process_id != process_id
+                    }
         context.send_event(event, body)
+
+    def _is_python_handoff_process(self, process_id: int) -> bool:
+        with self._lock:
+            return any(key[0] == process_id for key in self._python_handoffs)
+
+    @staticmethod
+    def _continue_child_handoff(
+        manager: ProcessManager,
+        thread_id: int,
+        process_id: int,
+    ) -> None:
+        del process_id
+        try:
+            manager.continue_thread(thread_id, single_thread=True)
+        except ChildTransportError:
+            pass
+
+    def _handoff_snapshot_to_debugpy(
+        self,
+        frame_id: object,
+        context: ProxyContext,
+    ) -> LocalResponse | None:
+        if not isinstance(frame_id, int):
+            return None
+        synthetic = context.synthetic_frames.get(frame_id)
+        manager = self._python_manager
+        if synthetic is None or manager is None or synthetic.process_id is None:
+            return None
+        key = (synthetic.process_id, synthetic.thread_id)
+        frame = synthetic.value
+        path = frame.get("path") if isinstance(frame, dict) else None
+        line = frame.get("line") if isinstance(frame, dict) else None
+        if not isinstance(path, str) or not isinstance(line, int):
+            return LocalResponse(
+                success=False,
+                message="Python frame has no source location for debugpy handoff",
+            )
+        with self._lock:
+            if key in self._python_handoffs:
+                return LocalResponse(
+                    success=False,
+                    message=(
+                        "Python frame handoff to debugpy is in progress; "
+                        "wait for the next Python stop"
+                    ),
+                )
+            self._python_handoffs.add(key)
+        try:
+            name = frame.get("name") if isinstance(frame, dict) else None
+            if not isinstance(name, str) or not name:
+                raise PythonTransportError(
+                    "Python frame has no function name for debugpy handoff"
+                )
+            manager.arm_targeted_handoff(
+                synthetic.process_id,
+                native_thread_id=synthetic.thread_id,
+                target_name=name,
+                target_path=path,
+            )
+            context.send_output(
+                "PyRust is switching this process from CodeLLDB to debugpy; "
+                "Python evaluation will be live at the next Python stop.\n",
+                category="console",
+            )
+            child_manager = self._process_manager
+            if (
+                child_manager is not None
+                and child_manager.owns_thread(synthetic.thread_id)
+            ):
+                child_manager.continue_thread(
+                    synthetic.thread_id,
+                    single_thread=True,
+                )
+            else:
+                response = context.request_downstream(
+                    "continue",
+                    {
+                        "threadId": synthetic.thread_id,
+                        "singleThread": True,
+                    },
+                    timeout=10,
+                )
+                if response.get("success") is not True:
+                    raise PythonTransportError(
+                        str(response.get("message", "native handoff continue failed"))
+                    )
+                context.state.on_continued(
+                    {
+                        "body": {
+                            "threadId": synthetic.thread_id,
+                            "systemProcessId": synthetic.process_id,
+                        }
+                    }
+                )
+        except (ChildTransportError, PythonTransportError, Exception) as error:
+            with self._lock:
+                self._python_handoffs.discard(key)
+            return LocalResponse(
+                success=False,
+                message=f"could not hand Python frame to debugpy: {error}",
+            )
+        return LocalResponse(body={"scopes": []})
+
+    def _capture_native_lease_frames(
+        self,
+        manager: PythonProcessManager,
+        python_thread_id: int,
+        context: ProxyContext,
+    ) -> list[dict[str, Any]]:
+        process_id, native_thread_id = manager.native_identity_for_thread(
+            python_thread_id
+        )
+        stopped = Event()
+        with self._lock:
+            self._native_maintenance[process_id] = stopped
+        child_manager = self._process_manager
+        try:
+            if child_manager is not None and child_manager.owns_thread(native_thread_id):
+                child_manager.pause_thread(native_thread_id)
+            else:
+                context.request_downstream(
+                    "pause",
+                    {"threadId": native_thread_id},
+                    timeout=10,
+                )
+            if not stopped.wait(10):
+                raise TimeoutError("native maintenance pause did not stop")
+            response = (
+                child_manager.stack_trace(native_thread_id, {"levels": 200})
+                if child_manager is not None
+                and child_manager.owns_thread(native_thread_id)
+                else context.request_downstream(
+                    "stackTrace",
+                    {"threadId": native_thread_id, "startFrame": 0, "levels": 200},
+                    timeout=10,
+                )
+            )
+            frames = (response.get("body") or {}).get("stackFrames")
+            if not isinstance(frames, list):
+                raise PythonTransportError("native maintenance stack is malformed")
+            descriptors = self._publish_native_lease_frames(
+                process_id,
+                native_thread_id,
+                python_thread_id,
+                frames,
+            )
+            continued = Event()
+            with self._lock:
+                self._native_suppress_continued[process_id] = continued
+            if child_manager is not None and child_manager.owns_thread(native_thread_id):
+                child_manager.continue_thread(native_thread_id, single_thread=True)
+            else:
+                context.request_downstream(
+                    "continue",
+                    {"threadId": native_thread_id, "singleThread": True},
+                    timeout=10,
+                )
+            continued.wait(5)
+            context.state.on_stopped(
+                {
+                    "body": {
+                        "threadId": python_thread_id,
+                        "systemProcessId": process_id,
+                        "allThreadsStopped": True,
+                    }
+                },
+                owner="python",
+            )
+            return descriptors
+        finally:
+            with self._lock:
+                self._native_maintenance.pop(process_id, None)
+
+    def _publish_native_lease_frames(
+        self,
+        process_id: int,
+        native_thread_id: int,
+        python_thread_id: int,
+        frames: list[object],
+    ) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        with self._lock:
+            self._native_lease_frames = {
+                frame_id: route
+                for frame_id, route in self._native_lease_frames.items()
+                if route.python_thread_id != python_thread_id
+            }
+            for frame in frames:
+                if not isinstance(frame, dict):
+                    continue
+                source = frame.get("source")
+                path = source.get("path") if isinstance(source, dict) else None
+                line = frame.get("line")
+                name = frame.get("name")
+                instruction_pointer = frame.get("instructionPointerReference")
+                if (
+                    not isinstance(path, str)
+                    or not path.endswith(".rs")
+                    or not _path_is_within(path, self._source_root)
+                    or not isinstance(line, int)
+                    or not isinstance(name, str)
+                    or not isinstance(instruction_pointer, str)
+                    or not instruction_pointer
+                ):
+                    continue
+                frame_id = self._native_lease_next
+                self._native_lease_next += 1
+                self._native_lease_frames[frame_id] = _NativeLeaseFrame(
+                    process_id=process_id,
+                    native_thread_id=native_thread_id,
+                    python_thread_id=python_thread_id,
+                    name=name,
+                    path=path,
+                    line=line,
+                    instruction_pointer_reference=instruction_pointer,
+                )
+                self._native_lease_issued.add(frame_id)
+                result.append(
+                    {
+                        "id": frame_id,
+                        "name": name,
+                        "source": {"name": Path(path).name, "path": path},
+                        "line": line,
+                        "column": 1,
+                        "instructionPointerReference": instruction_pointer,
+                        "presentationHint": "normal",
+                    }
+                )
+        return result
+
+    def _acquire_native_lease(
+        self,
+        route: _NativeLeaseFrame,
+        context: ProxyContext,
+    ) -> int:
+        with self._lock:
+            active = self._native_active.get(route.process_id)
+            if active is not None and route.frame_id is not None:
+                return route.frame_id
+            stopped = None if active is not None else Event()
+            if stopped is not None:
+                self._native_maintenance[route.process_id] = stopped
+        manager = self._process_manager
+        try:
+            if stopped is not None:
+                if manager is not None and manager.owns_thread(route.native_thread_id):
+                    manager.pause_thread(route.native_thread_id)
+                else:
+                    context.request_downstream(
+                        "pause",
+                        {"threadId": route.native_thread_id},
+                        timeout=10,
+                    )
+                if not stopped.wait(10):
+                    raise TimeoutError("CodeLLDB did not acquire the Rust frame lease")
+            response = (
+                manager.stack_trace(route.native_thread_id, {"levels": 200})
+                if manager is not None and manager.owns_thread(route.native_thread_id)
+                else context.request_downstream(
+                    "stackTrace",
+                    {
+                        "threadId": route.native_thread_id,
+                        "startFrame": 0,
+                        "levels": 200,
+                    },
+                    timeout=10,
+                )
+            )
+            frames = (response.get("body") or {}).get("stackFrames")
+            if not isinstance(frames, list):
+                raise PythonTransportError("CodeLLDB returned no Rust stack")
+            fresh = next(
+                (
+                    frame
+                    for frame in frames
+                    if isinstance(frame, dict)
+                    and frame.get("name") == route.name
+                    and isinstance(frame.get("source"), dict)
+                    and frame["source"].get("path") == route.path
+                ),
+                None,
+            )
+            frame_id = fresh.get("id") if isinstance(fresh, dict) else None
+            if not isinstance(frame_id, int):
+                raise PythonTransportError(
+                    f"CodeLLDB could not resolve Rust frame {route.name}"
+                )
+            with self._lock:
+                route.frame_id = frame_id
+                self._native_active[route.process_id] = (
+                    route.native_thread_id,
+                    route.python_thread_id,
+                )
+            return frame_id
+        finally:
+            if stopped is not None:
+                with self._lock:
+                    self._native_maintenance.pop(route.process_id, None)
+
+    def _release_native_lease(
+        self,
+        process_id: int,
+        context: ProxyContext,
+    ) -> None:
+        with self._lock:
+            active = self._native_active.pop(process_id, None)
+        if active is None:
+            return
+        native_thread_id, python_thread_id = active
+        continued = Event()
+        with self._lock:
+            self._native_suppress_continued[process_id] = continued
+            for route in self._native_lease_frames.values():
+                if route.process_id == process_id:
+                    route.frame_id = None
+        manager = self._process_manager
+        if manager is not None and manager.owns_thread(native_thread_id):
+            manager.continue_thread(native_thread_id, single_thread=True)
+        else:
+            context.request_downstream(
+                "continue",
+                {"threadId": native_thread_id, "singleThread": True},
+                timeout=10,
+            )
+        continued.wait(5)
+        context.state.on_stopped(
+            {
+                "body": {
+                    "threadId": python_thread_id,
+                    "systemProcessId": process_id,
+                    "allThreadsStopped": True,
+                }
+            },
+            owner="python",
+        )
+
+    def _step_from_native_lease(
+        self,
+        route: _NativeLeaseFrame,
+        request: Message,
+        context: ProxyContext,
+    ) -> LocalResponse:
+        python_manager = self._python_manager
+        if python_manager is None:
+            return LocalResponse(
+                success=False,
+                message="debugpy is unavailable for the Rust-frame handoff",
+            )
+        try:
+            self._acquire_native_lease(route, context)
+            with self._lock:
+                user_breakpoints = [
+                    dict(item) for item in self._instruction_breakpoints
+                ]
+            temporary = {
+                "instructionReference": route.instruction_pointer_reference
+            }
+            breakpoints = [*user_breakpoints, temporary]
+            manager = self._process_manager
+            response = (
+                manager.set_instruction_breakpoints(
+                    route.process_id,
+                    breakpoints,
+                )
+                if manager is not None
+                and manager.owns_thread(route.native_thread_id)
+                else context.request_downstream(
+                    "setInstructionBreakpoints",
+                    {"breakpoints": breakpoints},
+                    timeout=10,
+                )
+            )
+            if response.get("success") is not True:
+                return LocalResponse(
+                    success=False,
+                    message=str(
+                        response.get(
+                            "message",
+                            "CodeLLDB rejected the Rust return breakpoint",
+                        )
+                    ),
+                )
+            with self._lock:
+                self._temporary_native_return_process = route.process_id
+            self._release_native_lease(route.process_id, context)
+            resumed = python_manager.continue_thread(
+                route.python_thread_id,
+                single_thread=True,
+            )
+            return LocalResponse(body=dict(resumed.get("body") or {}))
+        except (ChildTransportError, PythonTransportError, TimeoutError) as error:
+            self._restore_instruction_breakpoints(route.process_id, context)
+            return LocalResponse(success=False, message=str(error))
+
+    def _restore_instruction_breakpoints(
+        self,
+        process_id: int | None,
+        context: ProxyContext,
+    ) -> bool:
+        with self._lock:
+            temporary_process = self._temporary_native_return_process
+            if (
+                temporary_process is None
+                or process_id != temporary_process
+            ):
+                return False
+            self._temporary_native_return_process = None
+            breakpoints = [
+                dict(item) for item in self._instruction_breakpoints
+            ]
+        try:
+            manager = self._process_manager
+            if manager is not None and manager.owns_process(temporary_process):
+                manager.set_instruction_breakpoints(
+                    temporary_process,
+                    breakpoints,
+                )
+            else:
+                context.request_downstream(
+                    "setInstructionBreakpoints",
+                    {"breakpoints": breakpoints},
+                    timeout=10,
+                )
+        except Exception:
+            pass
+        return True
 
     def _prepare_native_step_target(
         self,
@@ -1533,6 +2260,14 @@ def _dap_variable(name: str, value: object) -> dict[str, Any]:
         "variablesReference": 0,
         "evaluateName": name,
     }
+
+
+def _path_is_within(path: str, root: Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(root)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def _display_python_value(value: object) -> str:
@@ -1702,7 +2437,19 @@ def _launch_process_metadata(
 
 def _prepare_child_registry(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
-    for pattern in ("child-*.json", "ready-*", "attached-*", "release"):
+    for pattern in (
+        "child-*.json",
+        "ready-*",
+        "attached-*",
+        "complete-*",
+        "workers-ready-*",
+        "release",
+    ):
         for candidate in path.glob(pattern):
             if candidate.is_file() or candidate.is_symlink():
                 candidate.unlink()
+    debugpy_registry = path / "debugpy"
+    if debugpy_registry.is_dir():
+        for pattern in ("debugpy-*.json", "debugpy-*.failed", "debugpy-*.ready"):
+            for candidate in debugpy_registry.glob(pattern):
+                candidate.unlink(missing_ok=True)

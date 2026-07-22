@@ -18,7 +18,7 @@ One honest debugging view for CPython 3.14, PyO3, Rust threads, and processes.
 ## Short Description
 
 ```text
-PyRust is a VS Code debugging prototype for CPython 3.14 and PyO3 applications. It merges CodeLLDB native frames with read-only Python stack recovery, then shows real process and native-thread ownership without inventing false async or caller relationships.
+PyRust is a VS Code debugging prototype for CPython 3.14 and PyO3 applications. It merges Python and Rust stacks and transfers each selected frame to its real debugger, while showing real process and native-thread ownership without inventing false async or caller relationships.
 ```
 
 ## Full Description
@@ -31,8 +31,8 @@ stack but commonly loses the Python context that led there. Concurrent code
 makes this worse because processes, Python threads, Rust threads, and async
 tasks can be confused for each other.
 
-PyRust runs one DAP session through CodeLLDB and augments stopped native stacks
-with read-only CPython 3.14 frame recovery. In VS Code, the normal Call Stack
+PyRust runs one DAP session that coordinates CodeLLDB and debugpy through
+reversible frame leases. In VS Code, the normal Call Stack
 shows the selected mixed Rust/Python frame sequence. A companion PyRust Process
 Tree shows actual process and native-thread ownership, keeping sibling OS
 threads as siblings and refusing to invent a hierarchy for asyncio tasks or
@@ -47,8 +47,8 @@ call frame.
 
 PyRust is intentionally an alpha Developer Tools prototype. It targets Linux
 x86_64, CPython 3.14, and the pinned CodeLLDB environment. It supports Rust
-breakpoints, opt-in debugpy Python breakpoints, and read-only Python snapshots
-at Rust-owned stops. Cross-language stepping is not supported.
+and Python breakpoints, live per-frame expressions and mutation through the
+owning debugger, and direct-call Python-to-Rust Step Into.
 ```
 
 ## Built With

@@ -46,6 +46,7 @@ def _write_endpoint(registry: Path, host: str, port: int) -> Path:
     }
     target = registry / f"debugpy-{process_id}.json"
     target.with_suffix(".failed").unlink(missing_ok=True)
+    target.with_suffix(".ready").unlink(missing_ok=True)
     temporary = target.with_name(f".{target.name}.{process_id}.tmp")
     temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     os.replace(temporary, target)
@@ -69,15 +70,16 @@ def _wait_for_client(
     timeout_seconds: float,
 ) -> bool:
     failure_marker = endpoint_record.with_suffix(".failed")
+    ready_marker = endpoint_record.with_suffix(".ready")
     deadline = time.monotonic() + timeout_seconds
     is_connected = getattr(debugpy_module, "is_client_connected")
     while time.monotonic() < deadline:
-        if is_connected():
+        if is_connected() and ready_marker.is_file():
             return True
         if failure_marker.is_file():
             return False
         time.sleep(0.025)
-    return bool(is_connected())
+    return bool(is_connected() and ready_marker.is_file())
 
 
 def _bootstrap() -> None:

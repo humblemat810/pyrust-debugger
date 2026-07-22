@@ -2,8 +2,7 @@
 
 ## Status
 
-Implemented as an interim coordinator. It does not satisfy ADR 0011's
-per-frame real-debugger invariant.
+Accepted and implemented with ADR 0011's reversible per-frame engine leases.
 
 ## Context
 
@@ -25,7 +24,7 @@ VS Code
   -> PyRust coordinator
        -> CodeLLDB: Rust-owned stops and native frames
        -> debugpy: Python-owned stops and live Python frames
-       -> CPython reader: snapshot-only Python frames at Rust stops
+       -> CPython reader: routing-frame discovery and explicit legacy fallback
 ```
 
 Every exposed frame belongs to exactly one route:
@@ -34,7 +33,8 @@ Every exposed frame belongs to exactly one route:
 | --- | --- | --- |
 | Native CodeLLDB frame | Downstream native DAP ID | Rust scopes, variables, expressions, disassembly, native stepping |
 | Live debugpy frame | Virtual PyRust ID -> PID, debugpy thread ID, debugpy frame ID | Python scopes, variables, imports, calls, expressions, and Python stepping |
-| Snapshot Python frame | Stop-epoch-scoped synthetic PyRust ID | Source navigation, bounded locals, safe snapshot expressions only |
+| Python routing frame at Rust stop | Stop-epoch-scoped synthetic PyRust ID | Transfers to a refreshed live debugpy frame before interaction |
+| Rust lease frame at Python stop | Process/thread-scoped PyRust ID | Reacquires CodeLLDB and resolves a fresh native frame ID |
 
 Virtual Python and child-native IDs are process-scoped. Synthetic IDs are
 stop-epoch-scoped and cannot be reused after continuation. Native CodeLLDB
@@ -68,6 +68,8 @@ Positive:
 - selecting a live Python frame routes the Debug Console and variables to
   debugpy;
 - selecting a Rust frame routes them to CodeLLDB;
+- selecting a Python routing frame at a Rust stop transfers to debugpy before
+  variables, evaluation, or assignment are served;
 - live Python and Rust owner frames support DAP variable assignment through
   their owning engines;
 - Python stepping works at a Python-owned stop without switching VS Code
@@ -81,12 +83,8 @@ Positive:
 
 Limitations:
 
-- a snapshot Python frame nested inside a Rust-owned stop is not a live
-  debugpy frame and cannot import, call functions, mutate state, or step;
-- Rust frames are not yet exposed as live CodeLLDB frames inside a
-  debugpy-owned stack;
-- these two limitations mean the mixed debugger is not product-complete under
-  ADR 0011, even though owner-engine routing and handoff tests pass;
+- `pyrustPythonDebug: false` explicitly selects the legacy snapshot fallback
+  and does not satisfy ADR 0011;
 - Python-to-Rust Step Into recognizes a conservative direct call whose target
   name begins with `rust_`, installs a temporary CodeLLDB function breakpoint,
   preserves user function breakpoints, and restores them at the next stop;
@@ -106,4 +104,10 @@ Limitations:
 - automatic direct-call Python-to-Rust Step Into;
 - Python -> Rust and Rust -> Python -> Rust handoffs;
 - Rust-outer restart with live debugpy restored;
+- Rust-stop to live-debugpy frame transfer;
+- Python-stop outer Rust frame evaluation and mutation through CodeLLDB;
+- child-process Rust-stop to live-debugpy transfer;
+- child-process handoff after a user breakpoint on the Python-to-Rust call line;
+- dynamic callable handoff without native-name discovery;
+- exact-thread handoff for Python-created and Rust-created workers;
 - Python threads and child processes with virtualized IDs.

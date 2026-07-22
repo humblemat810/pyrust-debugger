@@ -42,6 +42,7 @@ def _start_fixture() -> tuple[DapClient, dict[str, object]]:
             "terminal": "console",
             "consoleMode": "evaluate",
             "sourceLanguages": ["rust"],
+            "pyrustPythonDebug": False,
         },
     )
     client.event("initialized", timeout=10)

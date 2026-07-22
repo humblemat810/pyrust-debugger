@@ -117,6 +117,9 @@ class ProcessManager:
         with self._lock:
             self._configuration_done = True
 
+    def owns_process(self, process_id: object) -> bool:
+        return isinstance(process_id, int) and process_id in self._sessions
+
     def threads(self) -> list[dict[str, Any]]:
         self.refresh_threads()
         with self._lock:
@@ -293,6 +296,62 @@ class ProcessManager:
             ),
         }
 
+    def set_variable(
+        self,
+        reference: int,
+        arguments: Mapping[str, Any],
+    ) -> Message:
+        route = self._require_variable(reference)
+        response = self._require_session(route.process_id).transport.request(
+            "setVariable",
+            {
+                "variablesReference": route.variables_reference,
+                "name": arguments.get("name", ""),
+                "value": arguments.get("value", ""),
+            },
+        )
+        body = response.get("body")
+        return {
+            "success": True,
+            "body": (
+                self._translate_variables_reference(
+                    route.process_id,
+                    route.thread_id,
+                    body,
+                )
+                if isinstance(body, dict)
+                else {}
+            ),
+        }
+
+    def set_expression(
+        self,
+        frame_id: int,
+        arguments: Mapping[str, Any],
+    ) -> Message:
+        route = self._require_frame(frame_id)
+        response = self._require_session(route.process_id).transport.request(
+            "setExpression",
+            {
+                "expression": arguments.get("expression", ""),
+                "value": arguments.get("value", ""),
+                "frameId": route.frame_id,
+            },
+        )
+        body = response.get("body")
+        return {
+            "success": True,
+            "body": (
+                self._translate_variables_reference(
+                    route.process_id,
+                    route.thread_id,
+                    body,
+                )
+                if isinstance(body, dict)
+                else {}
+            ),
+        }
+
     def continue_thread(self, thread_id: int, *, single_thread: bool = False) -> Message:
         return self._resume_thread(
             "continue",
@@ -324,6 +383,21 @@ class ProcessManager:
         return session.transport.request(
             "pause",
             {"threadId": thread_id},
+        )
+
+    def set_instruction_breakpoints(
+        self,
+        process_id: int,
+        breakpoints: Sequence[Mapping[str, Any]],
+    ) -> Message:
+        return self._require_session(process_id).transport.request(
+            "setInstructionBreakpoints",
+            {
+                "breakpoints": [
+                    dict(breakpoint)
+                    for breakpoint in breakpoints
+                ]
+            },
         )
 
     def _resume_thread(

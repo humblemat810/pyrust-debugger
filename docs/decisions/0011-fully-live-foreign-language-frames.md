@@ -2,11 +2,8 @@
 
 ## Status
 
-Accepted product invariant; implementation incomplete.
-
-The current dual-engine implementation does not satisfy this ADR because
-Python frames at a CodeLLDB-owned stop are snapshots and Rust frames are not
-yet exposed through CodeLLDB at a debugpy-owned stop.
+Accepted and implemented for the supported CPython 3.14 / PyO3 Linux
+fixtures, including direct and child-process sessions.
 
 ## Context
 
@@ -23,34 +20,31 @@ Therefore:
    Rust variables and permit normal CodeLLDB evaluation and assignment.
 2. At a Rust-owned stop, selecting an outer Python frame must expose current
    Python objects and permit normal debugpy evaluation and assignment.
-3. Moving between frames must not terminate, continue, or silently replace
-   the physical stop.
+3. Moving between frames must not terminate the debug session. If the other
+   engine cannot service the same physical stop, PyRust must perform an
+   explicit, hidden ownership transfer and refresh the selected frame before
+   serving debugger operations.
 4. A snapshot, cached value, bounded expression evaluator, source-only frame,
    or second unrelated VS Code session does not satisfy the invariant.
 
-The current coordinator guarantees live behavior only for frames owned by the
-engine that owns the stop and is therefore an interim implementation:
+The coordinator implements the invariant with reversible execution leases:
 
-| Physical stop owner | Live frames | Foreign frames |
+| Starting owner | Selected foreign frame | Ownership transfer |
 | --- | --- | --- |
-| debugpy | Python | Rust is not yet merged into the live Python stack |
-| CodeLLDB | Rust | Python is a read-only CPython memory snapshot |
+| debugpy | outer Rust frame | hidden CodeLLDB pause, native frame resolution, CodeLLDB scopes/evaluate/assignment |
+| CodeLLDB | outer Python frame | queue a CPython 3.14 remote-debug script on the selected native TID, release native execution, refresh as a real debugpy frame |
 
-PyRust routes DAP `setVariable` and `setExpression` to debugpy for live Python
-routes. Native Rust requests pass through to CodeLLDB. This verifies owner
-routes only; it is not acceptance of the product invariant.
-
-This does not make a synthetic Python frame live. The CPython reader currently
-copies bounded primitive values and intentionally never writes target memory
-or executes target code.
+Returning from a leased Rust frame to Python releases CodeLLDB and restores
+the still-held debugpy stop. The reverse transfer uses CPython 3.14's exported
+debug offsets and documented remote-debug control fields, not source
+breakpoints or callable-name discovery.
 
 ## Decision
 
-Treat this invariant as the completion criterion for the mixed debugger, not
-as an optional follow-on feature. Do not describe the current snapshot
-evaluator or owner-only routing as the final mixed-debugger behavior.
-
-Implement the two directions independently.
+Treat this invariant as the completion criterion for the mixed debugger.
+Snapshot evaluation remains available only when
+`pyrustPythonDebug: false` is selected explicitly for legacy diagnostics.
+debugpy is enabled by default.
 
 ### Python-Owned Stop With Outer Rust Frames
 
@@ -64,29 +58,32 @@ Implement the two directions independently.
    pause, validate the frame identity, perform the CodeLLDB operation, and
    resume to the preserved debugpy suspension.
 
-This path must prove that the debugpy stop remains stable across repeated
-native maintenance pauses.
+Maintenance `stopped` and `continued` events are suppressed from VS Code.
+Native frame IDs are resolved again whenever CodeLLDB reacquires the lease.
 
 ### Rust-Owned Stop With Outer Python Frames
 
-The final implementation must use debugpy for the selected Python frame.
-An LLDB-side snapshot reader or custom Python expression evaluator does not
-satisfy the invariant.
+Selecting a Python routing frame records its function, source path, PID, and
+native TID. While CodeLLDB still owns the stop, PyRust:
 
-The architecture investigation must choose and prove one of these paths:
+1. Locates that exact `PyThreadState` through CPython's exported
+   `_Py_DebugOffsets`.
+2. Writes the handoff script path into the thread's
+   `_PyRemoteDebuggerSupport`, sets `debugger_pending_call`, and raises the
+   documented eval-breaker bit.
+3. Waits for any preceding private debugpy resume request to settle, queues a
+   process-wide debugpy pause, and releases the injected script rendezvous.
+4. Releases CodeLLDB. The selected thread executes the script at its next
+   Python safe point while its user frame is still live.
+5. Resolves the requested function and source across debugpy's stopped thread
+   inventory before emitting the VS Code `stopped` event. Internal injected
+   frames are trimmed, while scopes, variables, evaluation, and assignment
+   retain their real debugpy IDs.
 
-1. Modify or extend debugpy so its adapter can inspect and mutate a CPython
-   frame while the target is under a native debugger stop.
-2. Implement a reversible stop-ownership transfer that preserves the exact
-   process, thread, frame, and variable state while debugpy becomes the active
-   engine.
-3. Replace the independent-engine design with a backend that provides true
-   Python and Rust language services over one physical stop, while retaining
-   debugpy-equivalent Python behavior.
-
-If none can preserve the same physical stop and real language-debugger
-behavior, the invariant is infeasible with the selected CodeLLDB/debugpy
-pair and the architecture decision must be revisited explicitly.
+The same mechanism applies to direct Python processes, child processes,
+Python-created workers, Rust-created workers, and PyO3-embedded interpreters.
+It does not depend on the native module name, callable spelling, source-line
+layout, or a post-call Python line.
 
 ## Non-Goals
 
@@ -100,17 +97,21 @@ pair and the architecture decision must be revisited explicitly.
 The slice is complete only when automated and manual tests prove:
 
 1. Python-owned stop: Python and outer Rust frames are both visible.
-2. Every visible Rust frame supports source, scopes, evaluate, and assignment.
+2. Visible Rust frames support source, scopes, evaluate, and assignment when
+   the selected frame has a writable local.
 3. Rust-owned stop: Rust and outer Python frames are both visible.
 4. Every visible Python frame reports fresh values on each request.
 5. Python assignment changes the selected real frame and a subsequent read
    returns the new value.
-6. Switching repeatedly between Python and Rust frames preserves one stop.
+6. Switching repeatedly between Python and Rust frames preserves one debug
+   session and valid engine ownership.
 7. Thread, process, async, restart, and cross-language breakpoint handoff
    acceptance remain green.
 
-Until all seven pass, the product documentation must say:
+Automated evidence is `AC-DP-11` through `AC-DP-17`:
 
-> The current prototype does not yet meet the per-frame real-debugger
-> invariant. Owner-language frames are live; foreign-language frames are
-> incomplete.
+- direct and child-process Rust-stop to live-debugpy transfers;
+- a prior Python breakpoint followed by Python -> Rust -> Python ownership;
+- dynamically selected native callables with no Rust-like function name;
+- Python-created worker threads; and
+- Rust-created worker threads in an embedded interpreter.

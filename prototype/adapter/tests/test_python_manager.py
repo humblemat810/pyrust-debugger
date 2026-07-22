@@ -3,10 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
+import time
 from typing import Any, Callable, Mapping, Sequence
 import unittest
+from unittest.mock import patch
 
-from prototype.adapter.python_manager import PythonProcessManager
+from prototype.adapter.python_manager import (
+    PythonProcessManager,
+    read_debugpy_registry,
+)
 from prototype.adapter.state import ProxySessionState
 
 
@@ -130,9 +135,12 @@ class FakeDebugpyTransport:
         arguments: Mapping[str, Any] | None = None,
         *,
         on_error: Callable[[Exception], None],
+        on_complete: Callable[[], None] | None = None,
     ) -> None:
         del on_error
         self.calls.append((command, dict(arguments or {})))
+        if on_complete is not None:
+            on_complete()
 
     def close(self) -> None:
         self.closed = True
@@ -151,6 +159,52 @@ class FailingDebugpyTransport(FakeDebugpyTransport):
 
 
 class PythonProcessManagerTests(unittest.TestCase):
+    def test_registry_removes_dead_process_records(self) -> None:
+        with TemporaryDirectory() as directory:
+            registry = Path(directory)
+            record = registry / "debugpy-999999999.json"
+            failure = registry / "debugpy-999999999.failed"
+            record.write_text(
+                '{"pid":999999999,"parentPid":1,'
+                '"host":"127.0.0.1","port":5678}',
+                encoding="utf-8",
+            )
+            failure.write_text("old failure", encoding="utf-8")
+
+            self.assertEqual(read_debugpy_registry(registry), ())
+            self.assertFalse(record.exists())
+            self.assertFalse(failure.exists())
+
+    def test_user_breakpoint_is_forwarded_without_hidden_breakpoints(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "app.py"
+            source.write_text(
+                "import pyrust_native\n"
+                "value = pyrust_native.rust_outer(20)\n"
+                "print(value)\n",
+                encoding="utf-8",
+            )
+            manager = PythonProcessManager(
+                registry_path=root / "registry",
+                state=ProxySessionState(),
+                emit_event=lambda _event, _body: None,
+            )
+            manager.add_breakpoints(
+                {
+                    "source": {"path": str(source)},
+                    "breakpoints": [{"line": 2}],
+                }
+            )
+
+            record = next(
+                item
+                for item in manager._all_breakpoints()
+                if item["source"]["path"] == str(source)
+            )
+            self.assertEqual(record["breakpoints"], [{"line": 2}])
+            manager.close()
+
     def test_python_routes_are_virtualized_and_release_ownership_on_continue(
         self,
     ) -> None:
@@ -285,6 +339,33 @@ class PythonProcessManagerTests(unittest.TestCase):
             self.assertEqual(
                 created[0].calls[-1],
                 ("pause", {"threadId": 701}),
+            )
+            with patch(
+                "prototype.adapter.python_manager.queue_remote_debug_script",
+                side_effect=lambda *_args: (
+                    registry / "handoff-entered-700"
+                ).touch(),
+            ) as remote_exec:
+                manager.arm_targeted_handoff(
+                    700,
+                    native_thread_id=700,
+                    target_name="python_worker",
+                    target_path="/workspace/worker.py",
+                )
+            remote_exec.assert_called_once_with(
+                700,
+                700,
+                registry / "pyrust-debugpy-handoff.py",
+            )
+            deadline = time.monotonic() + 1
+            while (
+                created[0].calls[-1] != ("pause", {"threadId": "*"})
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.005)
+            self.assertEqual(
+                created[0].calls[-1],
+                ("pause", {"threadId": "*"}),
             )
             manager.step_thread(
                 "stepIn",

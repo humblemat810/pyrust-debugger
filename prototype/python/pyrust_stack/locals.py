@@ -49,6 +49,12 @@ class _DebugOffsets:
     thread_next: int
     thread_current_frame: int
     thread_native_thread_id: int
+    thread_eval_breaker: int
+    thread_remote_debugger_support: int
+    interpreter_remote_debugging_enabled: int
+    debugger_pending_call: int
+    debugger_script_path: int
+    debugger_script_path_size: int
     frame_size: int
     frame_previous: int
     frame_executable: int
@@ -250,7 +256,7 @@ def _read_debug_offsets(memory: _RemoteMemory, pid: int) -> _DebugOffsets:
     section("size", "collecting")  # GC
     section("size", "gi_name", "gi_iframe", "gi_frame_state")  # generator
     section("next", "prev")  # linked list
-    section(
+    debugger_support = section(
         "eval_breaker",
         "remote_debugger_support",
         "remote_debugging_enabled",
@@ -276,6 +282,16 @@ def _read_debug_offsets(memory: _RemoteMemory, pid: int) -> _DebugOffsets:
         thread_next=thread["next"],
         thread_current_frame=thread["current_frame"],
         thread_native_thread_id=thread["native_thread_id"],
+        thread_eval_breaker=debugger_support["eval_breaker"],
+        thread_remote_debugger_support=debugger_support[
+            "remote_debugger_support"
+        ],
+        interpreter_remote_debugging_enabled=debugger_support[
+            "remote_debugging_enabled"
+        ],
+        debugger_pending_call=debugger_support["debugger_pending_call"],
+        debugger_script_path=debugger_support["debugger_script_path"],
+        debugger_script_path_size=debugger_support["debugger_script_path_size"],
         frame_size=frame["size"],
         frame_previous=frame["previous"],
         frame_executable=frame["executable"],

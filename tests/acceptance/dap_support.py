@@ -225,6 +225,8 @@ def launch_arguments(
         "terminal": "console",
         "consoleMode": "evaluate",
         "sourceLanguages": ["rust"],
+        # Legacy suites explicitly verify the snapshot fallback.
+        "pyrustPythonDebug": False,
     }
     if helper_command is not None:
         arguments["pyrustHelperCommand"] = helper_command

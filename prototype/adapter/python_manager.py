@@ -5,13 +5,18 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 import time
 from typing import Any, Callable, Mapping
 
 from .python_transport import DebugpyTransport, PythonTransportError
 from .state import ProxySessionState
+from prototype.python.pyrust_stack.remote_debug import (
+    queue_remote_debug_script,
+    RemoteDebugError,
+)
 
 
 Message = dict[str, Any]
@@ -31,6 +36,8 @@ class _PythonSession:
     process_id: int
     transport: DebugpyTransport
     threads: dict[int, str | None]
+    native_threads: dict[int, int]
+    resume_ready: Event
     ready: bool = False
 
 
@@ -54,6 +61,13 @@ class _VariableRoute:
     variables_reference: int
 
 
+@dataclass(frozen=True)
+class _PendingHandoffStep:
+    command: str
+    raw_thread_id: int
+    arguments: dict[str, Any]
+
+
 class PythonProcessManager:
     """Attach a private debugpy adapter to every registered Python process."""
 
@@ -66,6 +80,26 @@ class PythonProcessManager:
         transport_factory: TransportFactory | None = None,
     ) -> None:
         self._registry_path = registry_path
+        self._handoff_script = registry_path / "pyrust-debugpy-handoff.py"
+        registry_path.mkdir(parents=True, exist_ok=True)
+        self._handoff_script.write_text(
+            "import os as _pyrust_os\n"
+            "from pathlib import Path as _PyRustPath\n"
+            "import time as _pyrust_time\n"
+            "import debugpy as _pyrust_debugpy\n"
+            f"_pyrust_registry = _PyRustPath({str(registry_path)!r})\n"
+            "_pyrust_entered = _pyrust_registry / "
+            "f'handoff-entered-{_pyrust_os.getpid()}'\n"
+            "_pyrust_ready = _pyrust_registry / "
+            "f'handoff-ready-{_pyrust_os.getpid()}'\n"
+            "_pyrust_entered.touch()\n"
+            "_pyrust_deadline = _pyrust_time.monotonic() + 5.0\n"
+            "while not _pyrust_ready.exists() and "
+            "_pyrust_time.monotonic() < _pyrust_deadline:\n"
+            "    _pyrust_time.sleep(0.005)\n"
+            "_pyrust_debugpy.breakpoint()\n",
+            encoding="utf-8",
+        )
         self._state = state
         self._emit_event = emit_event
         self._transport_factory = transport_factory or _default_transport_factory
@@ -81,6 +115,10 @@ class PythonProcessManager:
         self._variable_routes: dict[int, _VariableRoute] = {}
         self._variable_keys: dict[tuple[int, int, int], int] = {}
         self._recent_frames: dict[int, list[dict[str, Any]]] = {}
+        self._handoff_targets: dict[int, tuple[str, str]] = {}
+        self._handoff_resolving: set[int] = set()
+        self._pending_handoff_steps: dict[int, _PendingHandoffStep] = {}
+        self._suppress_handoff_continued: set[int] = set()
         self._next_thread_id = _THREAD_ID_START
         self._next_frame_id = _FRAME_ID_START
         self._next_variable_reference = _VARIABLE_REFERENCE_START
@@ -137,6 +175,9 @@ class PythonProcessManager:
         with self._lock:
             self._configuration_done = True
 
+    def _all_breakpoints(self) -> list[dict[str, Any]]:
+        return [dict(record) for record in self._breakpoints]
+
     def prepare_restart(self) -> None:
         """Retire old debugpy identities before CodeLLDB launches a new PID."""
 
@@ -152,6 +193,10 @@ class PythonProcessManager:
             self._variable_routes.clear()
             self._variable_keys.clear()
             self._recent_frames.clear()
+            self._handoff_targets.clear()
+            self._handoff_resolving.clear()
+            self._pending_handoff_steps.clear()
+            self._suppress_handoff_continued.clear()
         for session in sessions:
             session.transport.close()
         for process_id in process_ids:
@@ -159,6 +204,19 @@ class PythonProcessManager:
 
     def owns_thread(self, thread_id: object) -> bool:
         return isinstance(thread_id, int) and thread_id in self._thread_routes
+
+    def native_identity_for_thread(self, thread_id: int) -> tuple[int, int]:
+        route = self._require_thread(thread_id)
+        session = self._require_session(route.process_id)
+        native_thread_id = next(
+            (
+                native
+                for native, python in session.native_threads.items()
+                if python == route.thread_id
+            ),
+            route.process_id,
+        )
+        return route.process_id, native_thread_id
 
     def has_python_stop(self) -> bool:
         with self._lock:
@@ -245,6 +303,21 @@ class PythonProcessManager:
             for frame in frames
             if isinstance(frame, dict)
         ]
+        with self._lock:
+            handoff_target = self._handoff_targets.get(route.process_id)
+        if handoff_target is not None:
+            target_name, target_path = handoff_target
+            target_index = next(
+                (
+                    index
+                    for index, frame in enumerate(translated)
+                    if frame.get("name") == target_name
+                    and (frame.get("source") or {}).get("path") == target_path
+                ),
+                None,
+            )
+            if target_index is not None:
+                translated = translated[target_index:]
         self._record_recent_frames(route.process_id, translated)
         return {
             "success": True,
@@ -479,6 +552,121 @@ class PythonProcessManager:
         )
         return {"success": True, "body": dict(response.get("body") or {})}
 
+    def arm_targeted_handoff(
+        self,
+        process_id: int,
+        *,
+        native_thread_id: int,
+        target_name: str,
+        target_path: str,
+    ) -> None:
+        """Queue a debugpy stop on the selected CPython native thread."""
+
+        deadline = time.monotonic() + 5
+        while True:
+            with self._lock:
+                session = self._sessions.get(process_id)
+            if session is not None:
+                break
+            if time.monotonic() >= deadline:
+                raise PythonTransportError(
+                    f"debugpy process {process_id} is unavailable"
+                )
+            time.sleep(0.025)
+        with self._lock:
+            self._handoff_targets[process_id] = (target_name, target_path)
+        ready_marker = self._registry_path / f"handoff-ready-{process_id}"
+        entered_marker = self._registry_path / f"handoff-entered-{process_id}"
+        ready_marker.unlink(missing_ok=True)
+        entered_marker.unlink(missing_ok=True)
+        try:
+            queue_remote_debug_script(
+                process_id,
+                native_thread_id,
+                self._handoff_script,
+            )
+        except RemoteDebugError as error:
+            raise PythonTransportError(
+                f"could not queue targeted CPython 3.14 handoff: {error}"
+            ) from error
+        Thread(
+            target=self._wait_and_queue_handoff_pause,
+            args=(session, entered_marker, ready_marker),
+            name=f"pyrust-debugpy-handoff-ready-{process_id}",
+            daemon=True,
+        ).start()
+
+    def _wait_and_queue_handoff_pause(
+        self,
+        session: _PythonSession,
+        entered_marker: Path,
+        ready_marker: Path,
+    ) -> None:
+        if not session.resume_ready.wait(5):
+            self._emit_event(
+                "output",
+                {
+                    "category": "stderr",
+                    "output": (
+                        "PyRust timed out waiting for the previous debugpy "
+                        f"resume in process {session.process_id}\n"
+                    ),
+                },
+            )
+            ready_marker.touch()
+            return
+        deadline = time.monotonic() + 5
+        while not entered_marker.is_file():
+            if time.monotonic() >= deadline:
+                self._emit_event(
+                    "output",
+                    {
+                        "category": "stderr",
+                        "output": (
+                            "PyRust timed out waiting for selected Python "
+                            f"thread {session.process_id} to enter handoff\n"
+                        ),
+                    },
+                )
+                ready_marker.touch()
+                return
+            time.sleep(0.005)
+        self._queue_handoff_pause(session, ready_marker)
+
+    def _queue_handoff_pause(
+        self,
+        session: _PythonSession,
+        ready_marker: Path,
+    ) -> None:
+        try:
+            session.transport.request_async(
+                "pause",
+                {"threadId": "*"},
+                on_error=lambda error: self._emit_event(
+                    "output",
+                    {
+                        "category": "stderr",
+                        "output": (
+                            "PyRust debugpy handoff pause failed for process "
+                            f"{session.process_id}: {error}\n"
+                        ),
+                    },
+                ),
+            )
+            ready_marker.touch()
+        except (OSError, PythonTransportError) as error:
+            self._emit_event(
+                "output",
+                {
+                    "category": "stderr",
+                    "output": (
+                        "PyRust could not queue the debugpy handoff pause for "
+                        f"process {session.process_id}: {error}\n"
+                    ),
+                },
+            )
+            ready_marker.touch()
+
     def _resume_thread(
         self,
         command: str,
@@ -486,21 +674,19 @@ class PythonProcessManager:
         arguments: Mapping[str, Any],
     ) -> Message:
         route = self._require_thread(thread_id)
+        session = self._require_session(route.process_id)
+        session.resume_ready.clear()
         forwarded = dict(arguments)
         forwarded["threadId"] = route.thread_id
-        self._require_session(route.process_id).transport.request_async(
+        session.transport.request_async(
             command,
             forwarded,
-            on_error=lambda error: self._emit_event(
-                "output",
-                {
-                    "category": "stderr",
-                    "output": (
-                        f"PyRust debugpy {command} failed for process "
-                        f"{route.process_id}: {error}\n"
-                    ),
-                },
+            on_error=lambda error: self._on_resume_error(
+                session,
+                command,
+                error,
             ),
+            on_complete=session.resume_ready.set,
         )
         body = {
             "threadId": thread_id,
@@ -510,11 +696,33 @@ class PythonProcessManager:
         # process lease and invalidating only the routes that actually resumed.
         return {"success": True, "body": body}
 
+    def _on_resume_error(
+        self,
+        session: _PythonSession,
+        command: str,
+        error: Exception,
+    ) -> None:
+        session.resume_ready.set()
+        self._emit_event(
+            "output",
+            {
+                "category": "stderr",
+                "output": (
+                    f"PyRust debugpy {command} failed for process "
+                    f"{session.process_id}: {error}\n"
+                ),
+            },
+        )
+
     def close(self) -> None:
         with self._lock:
             self._stop = True
             sessions = tuple(self._sessions.values())
             self._sessions.clear()
+            self._handoff_targets.clear()
+            self._handoff_resolving.clear()
+            self._pending_handoff_steps.clear()
+            self._suppress_handoff_continued.clear()
         for session in sessions:
             session.transport.close()
 
@@ -538,7 +746,7 @@ class PythonProcessManager:
                 or self._stop
             ):
                 return
-            breakpoints = tuple(self._breakpoints)
+            breakpoints = tuple(self._all_breakpoints())
         startup_events: list[Message] = []
 
         def handle_startup_event(event: Message) -> None:
@@ -575,7 +783,24 @@ class PythonProcessManager:
                 ),
                 engine="python",
             )
-            session = _PythonSession(process_id, transport, {}, ready=True)
+            native_threads = {
+                item["nativeThreadId"]: item["pythonThreadId"]
+                for item in record.get("threads", ())
+                if isinstance(item, dict)
+                and isinstance(item.get("nativeThreadId"), int)
+                and item["nativeThreadId"] > 0
+                and isinstance(item.get("pythonThreadId"), int)
+                and item["pythonThreadId"] > 0
+            }
+            session = _PythonSession(
+                process_id,
+                transport,
+                {},
+                native_threads,
+                Event(),
+                ready=True,
+            )
+            session.resume_ready.set()
             with self._lock:
                 if (
                     process_id in self._sessions
@@ -585,10 +810,11 @@ class PythonProcessManager:
                     transport.close()
                     return
                 self._sessions[process_id] = session
-                current_breakpoints = tuple(self._breakpoints)
+                current_breakpoints = tuple(self._all_breakpoints())
             for breakpoint in current_breakpoints:
                 if breakpoint not in breakpoints:
                     transport.request("setBreakpoints", breakpoint)
+            (self._registry_path / f"debugpy-{process_id}.ready").touch()
             for event in startup_events:
                 self._handle_event(process_id, event)
             self.refresh_threads()
@@ -628,6 +854,41 @@ class PythonProcessManager:
     def _handle_event(self, process_id: int, event: Message) -> None:
         name = event.get("event")
         body = dict(event.get("body") or {})
+        if name == "continued":
+            with self._lock:
+                suppress = process_id in self._suppress_handoff_continued
+                if suppress:
+                    self._suppress_handoff_continued.discard(process_id)
+                pending_step = process_id in self._pending_handoff_steps
+                if not pending_step and not suppress:
+                    self._handoff_targets.pop(process_id, None)
+            if suppress:
+                return
+        if name == "stopped":
+            with self._lock:
+                pending_step = self._pending_handoff_steps.get(process_id)
+                targeted = process_id in self._handoff_targets
+                resolving = process_id in self._handoff_resolving
+                if (pending_step is not None or targeted) and not resolving:
+                    self._handoff_resolving.add(process_id)
+            if pending_step is not None:
+                if not resolving:
+                    Thread(
+                        target=self._complete_handoff_step,
+                        args=(process_id,),
+                        name=f"pyrust-debugpy-clean-step-{process_id}",
+                        daemon=True,
+                    ).start()
+                return
+            if targeted:
+                if not resolving:
+                    Thread(
+                        target=self._emit_targeted_handoff_stop,
+                        args=(process_id, body),
+                        name=f"pyrust-debugpy-target-stop-{process_id}",
+                        daemon=True,
+                    ).start()
+                return
         raw_thread_id = body.get("threadId")
         virtual_thread_id: int | None = None
         if (
@@ -650,6 +911,12 @@ class PythonProcessManager:
             self._state.coordinator.execution_owner(process_id) == "python"
         )
         if name == "stopped":
+            (self._registry_path / f"handoff-entered-{process_id}").unlink(
+                missing_ok=True
+            )
+            (self._registry_path / f"handoff-ready-{process_id}").unlink(
+                missing_ok=True
+            )
             self._state.on_stopped({"body": body}, owner="python")
         elif name == "continued":
             if was_python_owner:
@@ -659,6 +926,15 @@ class PythonProcessManager:
             else:
                 self._clear_process_routes(process_id)
         elif name in {"exited", "terminated"}:
+            (self._registry_path / f"handoff-entered-{process_id}").unlink(
+                missing_ok=True
+            )
+            (self._registry_path / f"handoff-ready-{process_id}").unlink(
+                missing_ok=True
+            )
+            (self._registry_path / f"debugpy-{process_id}.ready").unlink(
+                missing_ok=True
+            )
             self._clear_process_routes(process_id)
             with self._lock:
                 exited_session = self._sessions.pop(process_id, None)
@@ -675,6 +951,153 @@ class PythonProcessManager:
             and was_python_owner
         ):
             self._emit_event("continued", body)
+
+    def _complete_handoff_step(self, process_id: int) -> None:
+        try:
+            session = self._require_session(process_id)
+            with self._lock:
+                pending = self._pending_handoff_steps.pop(process_id, None)
+                self._handoff_targets.pop(process_id, None)
+                if pending is not None:
+                    self._suppress_handoff_continued.add(process_id)
+            if pending is None:
+                return
+            forwarded = dict(pending.arguments)
+            forwarded["threadId"] = pending.raw_thread_id
+            session.resume_ready.clear()
+            session.transport.request_async(
+                pending.command,
+                forwarded,
+                on_error=lambda error: self._on_resume_error(
+                    session,
+                    pending.command,
+                    error,
+                ),
+                on_complete=session.resume_ready.set,
+            )
+        except PythonTransportError as error:
+            self._emit_event(
+                "output",
+                {
+                    "category": "stderr",
+                    "output": (
+                        "PyRust could not complete the requested Python step "
+                        f"for process {process_id}: {error}\n"
+                    ),
+                },
+            )
+        finally:
+            with self._lock:
+                self._handoff_resolving.discard(process_id)
+
+    def _emit_targeted_handoff_stop(
+        self,
+        process_id: int,
+        body: dict[str, Any],
+    ) -> None:
+        raw_thread_id = body.get("threadId")
+        try:
+            session = self._require_session(process_id)
+            target_depth: int | None = None
+            with self._lock:
+                target = self._handoff_targets.get(process_id)
+            if target is not None:
+                target_name, target_path = target
+                response = session.transport.request("threads")
+                threads = (response.get("body") or {}).get("threads")
+                if isinstance(threads, list):
+                    for thread in threads:
+                        if not isinstance(thread, dict):
+                            continue
+                        candidate = thread.get("id")
+                        if (
+                            not isinstance(candidate, int)
+                            or isinstance(candidate, bool)
+                            or candidate <= 0
+                        ):
+                            continue
+                        stack = session.transport.request(
+                            "stackTrace",
+                            {
+                                "threadId": candidate,
+                                "startFrame": 0,
+                                "levels": 200,
+                            },
+                        )
+                        frames = (stack.get("body") or {}).get("stackFrames")
+                        if not isinstance(frames, list):
+                            continue
+                        target_index = next(
+                            (
+                                index
+                                for index, frame in enumerate(frames)
+                                if isinstance(frame, dict)
+                                and frame.get("name") == target_name
+                                and isinstance(frame.get("source"), dict)
+                                and frame["source"].get("path") == target_path
+                            ),
+                            None,
+                        )
+                        if target_index is not None:
+                            raw_thread_id = candidate
+                            target_depth = target_index
+                            break
+            if (
+                not isinstance(raw_thread_id, int)
+                or isinstance(raw_thread_id, bool)
+                or raw_thread_id <= 0
+            ):
+                raise PythonTransportError(
+                    f"debugpy process {process_id} stopped without a thread"
+                )
+            if target_depth is not None and target_depth > 0:
+                with self._lock:
+                    self._suppress_handoff_continued.add(process_id)
+                    self._handoff_resolving.discard(process_id)
+                session.resume_ready.clear()
+                session.transport.request_async(
+                    "next",
+                    {
+                        "threadId": raw_thread_id,
+                    },
+                    on_error=lambda error: self._on_resume_error(
+                        session,
+                        "next",
+                        error,
+                    ),
+                    on_complete=session.resume_ready.set,
+                )
+                return
+            with self._lock:
+                self._handoff_targets.pop(process_id, None)
+            virtual_thread_id = self._record_thread(
+                process_id,
+                raw_thread_id,
+            )
+            body["threadId"] = virtual_thread_id
+            body["systemProcessId"] = process_id
+            (self._registry_path / f"handoff-entered-{process_id}").unlink(
+                missing_ok=True
+            )
+            (self._registry_path / f"handoff-ready-{process_id}").unlink(
+                missing_ok=True
+            )
+            self._state.on_stopped({"body": body}, owner="python")
+            self._emit_event("stopped", body)
+        except PythonTransportError as error:
+            self._emit_event(
+                "output",
+                {
+                    "category": "stderr",
+                    "output": (
+                        "PyRust could not resolve the selected Python handoff "
+                        f"thread for process {process_id}: {error}\n"
+                    ),
+                },
+            )
+        finally:
+            with self._lock:
+                self._handoff_resolving.discard(process_id)
 
     def _record_thread(
         self,
@@ -893,8 +1316,23 @@ def read_debugpy_registry(path: Path) -> tuple[dict[str, Any], ...]:
             and isinstance(payload.get("port"), int)
             and 0 < payload["port"] < 65_536
         ):
+            if not _process_exists(payload["pid"]):
+                candidate.unlink(missing_ok=True)
+                candidate.with_suffix(".failed").unlink(missing_ok=True)
+                candidate.with_suffix(".ready").unlink(missing_ok=True)
+                continue
             records.append(payload)
     return tuple(records)
+
+
+def _process_exists(process_id: int) -> bool:
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _default_transport_factory(

@@ -26,9 +26,17 @@ class SitecustomizeTests(unittest.TestCase):
             def connect() -> None:
                 time.sleep(0.025)
                 debugpy.connected = True
+                endpoint.with_suffix(".ready").touch()
 
             Thread(target=connect, daemon=True).start()
             self.assertTrue(_wait_for_client(debugpy, endpoint, 1.0))
+
+    def test_connection_without_configured_ready_marker_does_not_release(self) -> None:
+        debugpy = _FakeDebugpy()
+        debugpy.connected = True
+        with TemporaryDirectory() as directory:
+            endpoint = Path(directory) / "debugpy-100.json"
+            self.assertFalse(_wait_for_client(debugpy, endpoint, 0.05))
 
     def test_wait_returns_when_coordinator_marks_attach_failure(self) -> None:
         debugpy = _FakeDebugpy()

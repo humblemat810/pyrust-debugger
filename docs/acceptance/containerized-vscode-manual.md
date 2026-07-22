@@ -215,11 +215,11 @@ At each required stop:
 2. Select a Rust frame and confirm its scopes load.
 3. In the Python-outer `rust_inner` frame, evaluate `value` and confirm it is
    `20`.
-4. Select each Python frame and confirm the `Python Locals` scope appears.
-5. Expand `Python Locals` for `python_inner` and confirm `value = 20`.
-6. With `python_inner` selected, evaluate `value + 1` and confirm it is `21`.
-7. In this native-stop configuration, attempt `__import__('os')` and confirm
-   the snapshot evaluator rejects it without ending the session.
+4. Select a Python frame at the Rust stop. The Call Stack must refresh to a
+   real debugpy-owned Python stop.
+5. Expand `Locals` for `python_inner` and confirm `value = 20`.
+6. Evaluate `__import__('sys').version_info[:2]` and confirm `(3, 14)`.
+7. Change `value` to `41` and confirm a subsequent evaluation returns `41`.
 8. While moving between Rust and Python frames in the built-in **Call Stack**,
    confirm the Debug Console input language changes between Rust and Python.
    **PyRust Process Tree** may navigate to a frame's source, but select the
@@ -237,10 +237,9 @@ HC-CV-03 PASS
 Rust expression: value
 Observed value: 20
 Evidence: Human Debug Console and Variables inspection at rust_inner.
-Notes: Rust local scope showed value = 20; CodeLLDB evaluated 1 + 1 as 2
-in both fixture directions; Python Locals showed value = 20; snapshot
-evaluation of value + 1 returned 21; __import__('os') was rejected without
-ending the session.
+Notes: Rust local scope showed value = 20; CodeLLDB evaluated 1 + 1 as 2;
+selecting Python transferred ownership to debugpy, where imports and live
+assignment worked.
 ```
 
 ## HC-CV-04: Second Stop
@@ -304,8 +303,8 @@ HC-CV-05 PASS
 Python expression: __import__('sys').version_info[:2]
 Observed value: (3, 14)
 Evidence: debugpy-owned Python stop, followed by a CodeLLDB rust_inner stop.
-Notes: Full Python evaluation worked at Python stops; Python frames shown at
-Rust stops still used the bounded snapshot evaluator.
+Notes: Full Python evaluation worked at Python stops; selecting Python from a
+Rust stop transferred to a refreshed real debugpy frame.
 ```
 
 ## HC-CV-06: Python Engine Routing
@@ -324,10 +323,22 @@ Rust stops still used the bounded snapshot evaluator.
    `python_outer` line 11, then at `python_inner` line 5.
 7. Continue to `rust_inner`. Confirm the mixed stack begins with
    `rust_inner`, `rust_outer`, `python_inner`, `python_outer`.
-8. Select `python_inner` in the built-in Call Stack and evaluate `value + 1`.
-   It must return `21` from the snapshot evaluator.
+8. Select `python_inner` in the built-in Call Stack. The stack must refresh as
+   a debugpy stop. The Debug Console first reports that PyRust is switching
+   from CodeLLDB to debugpy; wait for the next Python stop before evaluating.
+   Evaluate `__import__('sys').version_info[:2]` and confirm `(3, 14)`, then
+   change `value` and read it back.
 9. Select `rust_inner` and evaluate `value * 2`. It must return `40` through
    CodeLLDB.
+10. Select `PyRust: Python Processes (debugpy)`, set breakpoints at
+    `tests/acceptance/multiprocess_worker.py:52` and
+    `research/fixtures/python_outer/src/lib.rs:6`, and start debugging. Continue
+    from the first Python stop into the Rust stop. Select the
+    `multiprocess_worker.py:52` `python_worker` frame and wait for debugpy to
+    reacquire that same frame on line 52. `import sys`, `sys.version_info[:2]`, and
+    `type(release).__name__` must then return without error, `(3, 14)`, and
+    `'PosixPath'`. This proves the selected frame is live debugpy and does not
+    depend on a hidden post-call source breakpoint.
 10. In the Rust **Local** scope, change `value` from `20` to `41`. Evaluate
     `value` and confirm it returns `41`.
 11. Select `PyRust: Rust Outer (debugpy)`. Set only the Python breakpoint at
@@ -339,18 +350,17 @@ Rust stops still used the bounded snapshot evaluator.
     `1 + 1` must evaluate to `2`.
 13. Click **Restart** while stopped. The session must relaunch, stop again in
     `python_inner`, and evaluate `value + 1` as `21`.
-
-Current boundary: when CodeLLDB owns the stop, the inserted Python frames are
-read-only snapshots. They show current bounded primitive locals, but editing
-them is not expected to work until ADR 0011's CPython bridge is implemented.
+14. At that Python stop, confirm the Call Stack also contains `rust_outer` and
+    `main`. Select `rust_outer`, evaluate `1 + 1`, change `outer_value` from
+    `30` to `41`, and read it back. Select `python_inner` again and confirm
+    imports still work.
 
 Record:
 
 ```text
 HC-CV-06 PASS
-Evidence: Python stepIn stops remained Python/debugpy-owned; a breakpoint-
-assisted Step Into handed ownership to CodeLLDB at rust_callback; restart
-restored the live debugpy Python stop.
+Evidence: frame selection transferred ownership to the frame's real debugger
+in both directions; restart restored the same behavior.
 ```
 
 ## Completion

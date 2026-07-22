@@ -37,8 +37,9 @@ Show and expand **PyRust Process Tree**.
 ## 65-75 Seconds: Interaction And Limits
 
 > Clicking a Process Tree frame navigates to its source. PyRust currently
-> supports Rust breakpoints, live debugpy Python stops, and read-only Python
-> recovery inside Rust-owned stops on Linux with CPython 3.14. A Python Step
+> supports live per-frame transfers between debugpy and CodeLLDB on Linux with
+> CPython 3.14. Selecting Python from a Rust stop refreshes it through
+> debugpy, while selecting outer Rust from a Python stop leases CodeLLDB. A Python Step
 > Into on a direct `rust_*` call creates a temporary native breakpoint and
 > hands control to CodeLLDB automatically. More dynamic call forms remain
 > future work.

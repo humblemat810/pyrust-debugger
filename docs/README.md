@@ -68,20 +68,19 @@ frames in both directions, plus safe snapshot expressions. It does not add
 Python breakpoints, stepping, object expansion, mutation, or in-target Python
 execution.
 
-ADR 0009 adds opt-in debugpy-backed Python breakpoints and full Python
+ADR 0009 introduced opt-in debugpy-backed Python breakpoints and full Python
 evaluation for Python-owned stops. CodeLLDB continues to own Rust stops, where
-the ADR 0005 snapshot path remains the safe Python fallback. The debugpy
+the ADR 0005 snapshot path remains an explicit legacy fallback. The debugpy
 transport is PID-scoped for Python threads and spawned child processes.
 
 ADR 0010 defines the dual-debug-engine coordinator. One VS Code-facing DAP
-session routes native frames and commands to CodeLLDB, live Python frames and
-commands to debugpy, and Rust-stop Python frames to the bounded snapshot
-reader.
+session routes native frames and commands to CodeLLDB and Python frames and
+commands to debugpy. Foreign frames use reversible engine leases.
 
-ADR 0011 records the product invariant: every displayed frame must use its
-real language debugger when selected, independent of which engine caused the
-stop. The current coordinator is explicitly incomplete under that invariant;
-owner-engine mutation works, but foreign-language frames are not fully live.
+ADR 0011 implements the product invariant: every displayed frame uses its real
+language debugger when selected, independent of which engine caused the stop.
+debugpy is enabled by default; disabling it explicitly selects legacy
+snapshot diagnostics.
 
 ADR 0006 implements the first process-tree coordinator. Two-worker
 Python-thread and Rust-thread fixtures pass. Python-parent and Rust-parent

@@ -32,19 +32,17 @@ extension.
    CPython process + Rust extension
 ```
 
-With `pyrustPythonDebug: true`, the proxy also connects directly to one
-debugpy endpoint per registered Python process. debugpy owns Python
+By default, the proxy also connects directly to one debugpy endpoint per
+registered Python process. debugpy owns Python
 source-breakpoint stops; CodeLLDB owns Rust stops. The proxy must not query
 debugpy while CodeLLDB has externally stopped the target.
 
-This ownership rule limits what a displayed frame can do. A Python frame
-inserted into a CodeLLDB-owned Rust stop is a proxy-owned snapshot frame. It
-can expose matched primitive locals and evaluate the bounded safe expression
-subset, but it cannot run Python bytecode, imports, function calls, object
-expansion, or mutation. Full Python evaluation is available only for a
-debugpy-owned Python stop. The mixed stack is therefore a unified
-presentation and routing layer, not simultaneous ownership of one frozen
-process by both engines.
+Foreign frames use reversible leases. A Python routing frame inserted into a
+CodeLLDB stop queues CPython 3.14's documented remote-debug script on the
+selected native TID and refreshes as a real debugpy frame before interaction.
+At a debugpy stop, PyRust performs a hidden CodeLLDB maintenance pause to
+discover outer Rust frames; selecting one reacquires CodeLLDB and resolves a
+fresh native frame ID. Returning to Python releases the native lease.
 
 ## Validated alternative
 
@@ -113,8 +111,8 @@ cache invalidation complexity.
 - `threads`: enrich thread-to-OS-ID mapping if needed
 - `stackTrace`: collect, merge, page, and cache
 - `scopes`: recognize synthetic frame IDs
-- `evaluate`: route Python-owned frame IDs to debugpy; evaluate native-stop
-  synthetic Python frames only through the bounded snapshot evaluator
+- `evaluate`: route live Python frame IDs to debugpy and Rust lease frames to
+  CodeLLDB; a Python routing frame first transfers ownership to debugpy
 - `continue`, `next`, `stepIn`, `stepOut`, `pause`: route virtual Python
   threads to debugpy and native threads to CodeLLDB
 
@@ -124,7 +122,8 @@ The coordinator's frame routing table is explicit:
 | --- | --- | --- |
 | Native CodeLLDB ID | CodeLLDB | Rust variables, expressions, source/disassembly, native stepping |
 | Virtual debugpy ID | debugpy | Python variables, imports, calls, expressions, Python stepping |
-| Stop-scoped synthetic ID | PyRust snapshot | Source navigation, bounded locals, safe snapshot expressions |
+| Stop-scoped Python routing ID | PyRust -> debugpy handoff | Activates a real debugpy stop before frame interaction |
+| Rust lease ID | PyRust -> CodeLLDB lease | Reacquires CodeLLDB, resolves the native frame, and routes native operations |
 
 The built-in VS Code Call Stack is authoritative for frame selection. A custom
 Process Tree can navigate source and display ownership, but it cannot set

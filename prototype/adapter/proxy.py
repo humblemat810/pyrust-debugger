@@ -133,6 +133,13 @@ class ProxyHooks:
     ) -> LocalResponse | None:
         return None
 
+    def on_set_instruction_breakpoints(
+        self,
+        request: Message,
+        context: "ProxyContext",
+    ) -> LocalResponse | None:
+        return None
+
     def on_set_variable(
         self,
         request: Message,
@@ -259,6 +266,7 @@ class DapProxy:
             "setBreakpoints",
             "setExpression",
             "setFunctionBreakpoints",
+            "setInstructionBreakpoints",
             "setVariable",
             "stackTrace",
             "stepIn",
@@ -633,6 +641,11 @@ class DapProxy:
                 response = self._hooks.on_set_breakpoints(request, self.context)
             elif command == "setFunctionBreakpoints":
                 response = self._hooks.on_set_function_breakpoints(
+                    request,
+                    self.context,
+                )
+            elif command == "setInstructionBreakpoints":
+                response = self._hooks.on_set_instruction_breakpoints(
                     request,
                     self.context,
                 )

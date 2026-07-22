@@ -26,6 +26,9 @@ MULTIPROCESS_DRIVER = (
     ROOT / "tests" / "acceptance" / "multiprocess_fixture_driver.py"
 )
 MULTIPROCESS_WORKER = ROOT / "tests" / "acceptance" / "multiprocess_worker.py"
+DYNAMIC_CALL_DRIVER = (
+    ROOT / "tests" / "acceptance" / "dynamic_call_fixture_driver.py"
+)
 RUST_OUTER_FIXTURE = ROOT / "research" / "fixtures" / "rust_outer"
 RUST_OUTER_TARGET = Path(
     os.environ.get("CARGO_TARGET_DIR", str(RUST_OUTER_FIXTURE / "target"))
@@ -33,6 +36,13 @@ RUST_OUTER_TARGET = Path(
 RUST_OUTER_BINARY = RUST_OUTER_TARGET / "debug" / "rust-outer-python-inner"
 RUST_OUTER_SOURCE = RUST_OUTER_FIXTURE / "src" / "main.rs"
 EMBEDDED_PYTHON_SOURCE = RUST_OUTER_FIXTURE / "src" / "embedded.py"
+RUST_THREADED_BINARY = (
+    RUST_OUTER_TARGET / "debug" / "rust-outer-python-threads"
+)
+RUST_THREADED_SOURCE = RUST_OUTER_FIXTURE / "src" / "threaded_main.rs"
+RUST_THREADED_PYTHON_SOURCE = (
+    RUST_OUTER_FIXTURE / "src" / "threaded_embedded.py"
+)
 
 CRITERIA = (
     "AC-DP-01",
@@ -45,6 +55,14 @@ CRITERIA = (
     "AC-DP-08",
     "AC-DP-09",
     "AC-DP-10",
+    "AC-DP-11",
+    "AC-DP-12",
+    "AC-DP-13",
+    "AC-DP-14",
+    "AC-DP-15",
+    "AC-DP-16",
+    "AC-DP-17",
+    "AC-DP-18",
 )
 
 
@@ -544,6 +562,623 @@ def live_rust_assignment() -> None:
         client.close()
 
 
+def rust_stop_to_live_debugpy_frame() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=RUST_OUTER_BINARY,
+            args=[],
+            env={"LD_LIBRARY_PATH": _python_libdir()},
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, RUST_OUTER_SOURCE, 8)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+        stopped = client.event("stopped", timeout=30)
+        frames = _stack(client, stopped["body"]["threadId"])
+        python_frame = next(
+            (frame for frame in frames if frame.get("name") == "python_inner"),
+            None,
+        )
+        if not isinstance(python_frame, dict):
+            raise DapError(f"Rust stop had no Python frame: {frames[:8]}")
+        client.response(
+            client.send("scopes", {"frameId": python_frame["id"]}),
+            timeout=10,
+        )
+        python_stop = client.event("stopped", timeout=30)
+        python_thread = python_stop.get("body", {}).get("threadId")
+        if not isinstance(python_thread, int):
+            raise DapError(f"debugpy handoff had no thread: {python_stop}")
+        live = _stack(client, python_thread)[0]
+        frame_id = live.get("id")
+        if (
+            live.get("name") != "python_inner"
+            or not isinstance(frame_id, int)
+            or _evaluate(client, frame_id, "__import__('sys').version_info[:2]")
+            != "(3, 14)"
+        ):
+            raise DapError(f"Rust stop did not hand off to live debugpy: {live}")
+        scopes = client.response(
+            client.send("scopes", {"frameId": frame_id}),
+            timeout=10,
+        ).get("body", {}).get("scopes")
+        local = next(
+            (
+                scope
+                for scope in scopes
+                if isinstance(scope, dict) and scope.get("name") == "Locals"
+            ),
+            None,
+        ) if isinstance(scopes, list) else None
+        reference = local.get("variablesReference") if isinstance(local, dict) else None
+        if not isinstance(reference, int):
+            raise DapError(f"live debugpy handoff had no locals: {scopes}")
+        client.response(
+            client.send(
+                "setVariable",
+                {
+                    "variablesReference": reference,
+                    "name": "value",
+                    "value": "41",
+                },
+            ),
+            timeout=10,
+        )
+        if _evaluate(client, frame_id, "value") != "41":
+            raise DapError("live debugpy handoff did not mutate the Python frame")
+    finally:
+        client.close()
+
+
+def python_stop_to_live_codelldb_frame() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=RUST_OUTER_BINARY,
+            args=[],
+            env={"LD_LIBRARY_PATH": _python_libdir()},
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, EMBEDDED_PYTHON_SOURCE, 4)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+        stopped = client.event("stopped", timeout=30)
+        thread_id = stopped.get("body", {}).get("threadId")
+        if not isinstance(thread_id, int):
+            raise DapError(f"Python stop had no thread: {stopped}")
+        frames = _stack(client, thread_id)
+        rust_frame = next(
+            (
+                frame
+                for frame in frames
+                if str(frame.get("name", "")).endswith("::rust_outer")
+            ),
+            None,
+        )
+        if not isinstance(rust_frame, dict):
+            raise DapError(f"Python stop had no outer Rust frame: {frames}")
+        rust_id = rust_frame.get("id")
+        if not isinstance(rust_id, int) or _evaluate(client, rust_id, "1 + 1") != "2":
+            raise DapError(f"outer Rust frame was not live CodeLLDB: {rust_frame}")
+        rust_scopes = client.response(
+            client.send("scopes", {"frameId": rust_id}),
+            timeout=10,
+        ).get("body", {}).get("scopes")
+        local = next(
+            (
+                scope
+                for scope in rust_scopes
+                if isinstance(scope, dict) and scope.get("name") == "Local"
+            ),
+            None,
+        ) if isinstance(rust_scopes, list) else None
+        reference = local.get("variablesReference") if isinstance(local, dict) else None
+        if not isinstance(reference, int):
+            raise DapError(f"outer Rust frame had no local scope: {rust_scopes}")
+        response = client.response(
+            client.send(
+                "setVariable",
+                {
+                    "variablesReference": reference,
+                    "name": "outer_value",
+                    "value": "41",
+                },
+            ),
+            timeout=10,
+        )
+        if (
+            response.get("body", {}).get("value") != "41"
+            or _evaluate(client, rust_id, "outer_value") != "41"
+        ):
+            raise DapError(f"outer Rust mutation was not live: {response}")
+        python_frame = frames[0]
+        client.response(
+            client.send("scopes", {"frameId": python_frame["id"]}),
+            timeout=10,
+        )
+        if (
+            _evaluate(
+                client,
+                python_frame["id"],
+                "__import__('sys').version_info[:2]",
+            )
+            != "(3, 14)"
+        ):
+            raise DapError("returning from Rust frame did not restore debugpy")
+    finally:
+        client.close()
+
+
+def child_rust_stop_to_live_debugpy_frame() -> None:
+    with TemporaryDirectory(prefix="pyrust-debugpy-handoff-") as directory:
+        client = DapClient(proxy_command())
+        try:
+            initialize(client)
+            launch = _launch(
+                client,
+                program=PYTHON,
+                args=[str(MULTIPROCESS_DRIVER)],
+                env={"PYRUST_CHILD_REGISTRY": directory},
+                extra={
+                    "pyrustChildRegistryPath": directory,
+                    "pyrustProcessMode": "children",
+                },
+            )
+            client.event("initialized", timeout=10)
+            _set_breakpoint(client, RUST_SOURCE, 6)
+            client.response(client.send("configurationDone"), timeout=10)
+            client.response(launch, timeout=20)
+            stopped = client.event("stopped", timeout=45)
+            process_id = stopped.get("body", {}).get("systemProcessId")
+            thread_id = stopped.get("body", {}).get("threadId")
+            if not isinstance(process_id, int) or not isinstance(thread_id, int):
+                raise DapError(f"child Rust stop had no identity: {stopped}")
+            frames = _stack(client, thread_id)
+            python_frame = next(
+                (frame for frame in frames if frame.get("name") == "python_worker"),
+                None,
+            )
+            if not isinstance(python_frame, dict):
+                raise DapError(f"child Rust stop had no Python frame: {frames[:10]}")
+            client.response(
+                client.send("scopes", {"frameId": python_frame["id"]}),
+                timeout=15,
+            )
+            deadline = __import__("time").monotonic() + 40
+            while True:
+                remaining = deadline - __import__("time").monotonic()
+                if remaining <= 0:
+                    raise DapError("child debugpy handoff did not stop")
+                python_stop = client.event("stopped", timeout=remaining)
+                body = python_stop.get("body", {})
+                if (
+                    body.get("systemProcessId") == process_id
+                    and isinstance(body.get("threadId"), int)
+                    and body["threadId"] >= 1_600_000_000
+                ):
+                    break
+            live = _stack(client, python_stop["body"]["threadId"])[0]
+            frame_id = live.get("id")
+            if (
+                live.get("name") != "python_worker"
+                or not isinstance(frame_id, int)
+                or _evaluate(client, frame_id, "type(release).__name__")
+                != "'PosixPath'"
+                or _evaluate(client, frame_id, "__import__('sys').version_info[:2]")
+                != "(3, 14)"
+            ):
+                raise DapError(f"child Python frame was not live debugpy: {live}")
+        finally:
+            client.close()
+
+
+def child_user_breakpoint_preserves_debugpy_handoff() -> None:
+    with TemporaryDirectory(prefix="pyrust-debugpy-user-breakpoint-") as directory:
+        client = DapClient(proxy_command())
+        try:
+            initialize(client)
+            launch = _launch(
+                client,
+                program=PYTHON,
+                args=[str(MULTIPROCESS_DRIVER)],
+                env={
+                    "PYRUST_CHILD_REGISTRY": directory,
+                    "PYRUST_CHILD_COUNT": "1",
+                },
+                extra={
+                    "pyrustChildRegistryPath": directory,
+                    "pyrustProcessMode": "children",
+                },
+            )
+            client.event("initialized", timeout=10)
+            _set_breakpoint(client, MULTIPROCESS_WORKER, 52)
+            _set_breakpoint(client, RUST_SOURCE, 6)
+            client.response(client.send("configurationDone"), timeout=10)
+            client.response(launch, timeout=20)
+
+            python_stop = client.event("stopped", timeout=45)
+            process_id = python_stop.get("body", {}).get("systemProcessId")
+            python_thread = python_stop.get("body", {}).get("threadId")
+            if (
+                not isinstance(process_id, int)
+                or not isinstance(python_thread, int)
+                or python_thread < 1_600_000_000
+            ):
+                raise DapError(
+                    f"child user breakpoint was not owned by debugpy: {python_stop}"
+                )
+            python_frame = _stack(client, python_thread)[0]
+            if (
+                python_frame.get("name") != "python_worker"
+                or python_frame.get("line") != 52
+            ):
+                raise DapError(
+                    f"child user breakpoint stopped in the wrong frame: {python_frame}"
+                )
+
+            client.response(
+                client.send("continue", {"threadId": python_thread}),
+                timeout=10,
+            )
+            rust_stop = client.event("stopped", timeout=45)
+            rust_thread = rust_stop.get("body", {}).get("threadId")
+            if (
+                rust_stop.get("body", {}).get("systemProcessId") != process_id
+                or not isinstance(rust_thread, int)
+                or rust_thread >= 1_600_000_000
+            ):
+                raise DapError(f"child did not hand off from debugpy to Rust: {rust_stop}")
+
+            frames = _stack(client, rust_thread)
+            snapshot = next(
+                (
+                    frame
+                    for frame in frames
+                    if frame.get("name") == "python_worker"
+                    and (frame.get("source") or {}).get("path")
+                    == str(MULTIPROCESS_WORKER)
+                ),
+                None,
+            )
+            if not isinstance(snapshot, dict):
+                raise DapError(f"Rust stop had no outer Python frame: {frames[:12]}")
+            client.response(
+                client.send("scopes", {"frameId": snapshot["id"]}),
+                timeout=15,
+            )
+
+            deadline = __import__("time").monotonic() + 40
+            while True:
+                remaining = deadline - __import__("time").monotonic()
+                if remaining <= 0:
+                    raise DapError(
+                        "neighboring user breakpoint removed the debugpy handoff"
+                    )
+                resumed = client.event("stopped", timeout=remaining)
+                body = resumed.get("body", {})
+                if (
+                    body.get("systemProcessId") == process_id
+                    and isinstance(body.get("threadId"), int)
+                    and body["threadId"] >= 1_600_000_000
+                ):
+                    break
+
+            live = _stack(client, resumed["body"]["threadId"])[0]
+            live_id = live.get("id")
+            if (
+                live.get("name") != "python_worker"
+                or live.get("line") != 52
+                or not isinstance(live_id, int)
+            ):
+                raise DapError(
+                    f"debugpy did not reacquire the selected Python frame: {live}"
+                )
+            client.response(client.send("scopes", {"frameId": live_id}), timeout=10)
+
+            import_request = client.send(
+                "evaluate",
+                {"expression": "import sys", "context": "repl"},
+            )
+            if (
+                client.response(import_request, timeout=10)
+                .get("body", {})
+                .get("result")
+                != ""
+            ):
+                raise DapError("frameless Debug Console import did not use debugpy")
+            if _evaluate(
+                client,
+                live_id,
+                "sys.version_info[:2]",
+                context="repl",
+            ) != "(3, 14)":
+                raise DapError("debugpy did not preserve the imported module")
+            release = client.response(
+                client.send(
+                    "evaluate",
+                    {
+                        "expression": "release",
+                        "frameId": live_id,
+                        "context": "watch",
+                    },
+                ),
+                timeout=10,
+            ).get("body", {})
+            if (
+                "PosixPath" not in str(release.get("result"))
+                or not isinstance(release.get("variablesReference"), int)
+            ):
+                raise DapError(f"debugpy did not render the Path object: {release}")
+        finally:
+            client.close()
+
+
+def dynamic_native_call_hands_off_without_name_discovery() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=PYTHON,
+            args=[str(DYNAMIC_CALL_DRIVER)],
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, RUST_SOURCE, 6)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        rust_stop = client.event("stopped", timeout=30)
+        rust_thread = rust_stop.get("body", {}).get("threadId")
+        if not isinstance(rust_thread, int):
+            raise DapError(f"dynamic-call Rust stop had no thread: {rust_stop}")
+        frames = _stack(client, rust_thread)
+        routing_frame = next(
+            (
+                frame
+                for frame in frames
+                if frame.get("name") == "python_dynamic"
+                and (frame.get("source") or {}).get("path")
+                == str(DYNAMIC_CALL_DRIVER)
+            ),
+            None,
+        )
+        if not isinstance(routing_frame, dict):
+            raise DapError(
+                f"dynamic-call Rust stop had no Python routing frame: {frames[:12]}"
+            )
+        client.response(
+            client.send("scopes", {"frameId": routing_frame["id"]}),
+            timeout=10,
+        )
+
+        python_stop = client.event("stopped", timeout=30)
+        python_thread = python_stop.get("body", {}).get("threadId")
+        if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
+            raise DapError(
+                f"dynamic-call handoff was not owned by debugpy: {python_stop}"
+            )
+        live = _stack(client, python_thread)[0]
+        live_id = live.get("id")
+        if (
+            live.get("name") != "python_dynamic"
+            or (live.get("source") or {}).get("path") != str(DYNAMIC_CALL_DRIVER)
+            or not isinstance(live_id, int)
+        ):
+            raise DapError(f"dynamic-call debugpy frame was malformed: {live}")
+        if (
+            _evaluate(client, live_id, "label") != "'dynamic-python-to-rust'"
+            or _evaluate(client, live_id, "type(candidates).__name__") != "'dict'"
+            or _evaluate(client, live_id, "__import__('sys').version_info[:2]")
+            != "(3, 14)"
+        ):
+            raise DapError("dynamic-call Python frame was not live debugpy")
+    finally:
+        client.close()
+
+
+def python_worker_rust_stop_returns_to_same_debugpy_thread() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=PYTHON,
+            args=[str(THREADED_DRIVER)],
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, RUST_SOURCE, 6)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        rust_stop = client.event("stopped", timeout=30)
+        rust_thread = rust_stop.get("body", {}).get("threadId")
+        if not isinstance(rust_thread, int):
+            raise DapError(f"Python-worker Rust stop had no thread: {rust_stop}")
+        frames = _stack(client, rust_thread)
+        routing_frame = next(
+            (frame for frame in frames if frame.get("name") == "python_worker"),
+            None,
+        )
+        if not isinstance(routing_frame, dict):
+            raise DapError(f"Python worker frame was missing: {frames[:12]}")
+        client.response(
+            client.send("scopes", {"frameId": routing_frame["id"]}),
+            timeout=10,
+        )
+
+        python_stop = client.event("stopped", timeout=30)
+        python_thread = python_stop.get("body", {}).get("threadId")
+        if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
+            raise DapError(
+                f"Python worker handoff was not owned by debugpy: {python_stop}"
+            )
+        live = _stack(client, python_thread)[0]
+        live_id = live.get("id")
+        if (
+            live.get("name") != "python_worker"
+            or (live.get("source") or {}).get("path") != str(THREADED_DRIVER)
+            or not isinstance(live_id, int)
+        ):
+            raise DapError(f"Python worker debugpy frame was malformed: {live}")
+        label = _evaluate(client, live_id, "worker_label")
+        value = _evaluate(client, live_id, "worker_value")
+        if (label, value) not in {
+            ("'worker-A'", "20"),
+            ("'worker-B'", "40"),
+        }:
+            raise DapError(
+                f"Python worker debugpy locals crossed threads: {label}, {value}"
+            )
+    finally:
+        client.close()
+
+
+def rust_worker_python_frame_uses_same_debugpy_thread() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=RUST_THREADED_BINARY,
+            args=[],
+            env={"LD_LIBRARY_PATH": _python_libdir()},
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, RUST_THREADED_SOURCE, 13)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        rust_stop = client.event("stopped", timeout=30)
+        rust_thread = rust_stop.get("body", {}).get("threadId")
+        if not isinstance(rust_thread, int):
+            raise DapError(f"Rust-worker callback stop had no thread: {rust_stop}")
+        frames = _stack(client, rust_thread)
+        routing_frame = next(
+            (
+                frame
+                for frame in frames
+                if frame.get("name") == "python_inner"
+                and (frame.get("source") or {}).get("path")
+                == str(RUST_THREADED_PYTHON_SOURCE)
+            ),
+            None,
+        )
+        if not isinstance(routing_frame, dict):
+            raise DapError(
+                f"Rust worker had no embedded Python frame: {frames[:16]}"
+            )
+        client.response(
+            client.send("scopes", {"frameId": routing_frame["id"]}),
+            timeout=10,
+        )
+
+        python_stop = client.event("stopped", timeout=30)
+        python_thread = python_stop.get("body", {}).get("threadId")
+        if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
+            raise DapError(
+                f"Rust-worker Python handoff was not debugpy-owned: {python_stop}"
+            )
+        live = _stack(client, python_thread)[0]
+        live_id = live.get("id")
+        if (
+            live.get("name") != "python_inner"
+            or (live.get("source") or {}).get("path")
+            != str(RUST_THREADED_PYTHON_SOURCE)
+            or not isinstance(live_id, int)
+        ):
+            raise DapError(f"Rust worker live Python frame was malformed: {live}")
+        label = _evaluate(client, live_id, "worker_label")
+        value = _evaluate(client, live_id, "worker_value")
+        if (label, value) not in {
+            ("'rust-worker-A'", "20"),
+            ("'rust-worker-B'", "40"),
+        }:
+            raise DapError(
+                f"Rust worker live Python locals crossed threads: {label}, {value}"
+            )
+    finally:
+        client.close()
+
+
+def selected_rust_frame_step_returns_to_codelldb() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=RUST_OUTER_BINARY,
+            args=[],
+            env={"LD_LIBRARY_PATH": _python_libdir()},
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, EMBEDDED_PYTHON_SOURCE, 4)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        python_stop = client.event("stopped", timeout=30)
+        python_thread = python_stop.get("body", {}).get("threadId")
+        if not isinstance(python_thread, int):
+            raise DapError(f"Rust-step Python stop had no thread: {python_stop}")
+        frames = _stack(client, python_thread)
+        rust_frame = next(
+            (
+                frame
+                for frame in frames
+                if (frame.get("source") or {}).get("path")
+                == str(RUST_OUTER_SOURCE)
+                and "closure" in str(frame.get("name", ""))
+            ),
+            None,
+        )
+        if not isinstance(rust_frame, dict):
+            raise DapError(f"Python stop had no active Rust call frame: {frames}")
+        rust_id = rust_frame.get("id")
+        if not isinstance(rust_id, int):
+            raise DapError(f"Rust lease frame had no ID: {rust_frame}")
+        client.response(
+            client.send("scopes", {"frameId": rust_id}),
+            timeout=10,
+        )
+
+        step = client.send(
+            "next",
+            {"threadId": python_thread, "granularity": "line"},
+        )
+        client.response(step, timeout=10)
+        rust_stop = client.event("stopped", timeout=30)
+        rust_thread = rust_stop.get("body", {}).get("threadId")
+        if (
+            rust_stop.get("body", {}).get("reason") != "step"
+            or not isinstance(rust_thread, int)
+            or rust_thread >= 1_600_000_000
+        ):
+            raise DapError(
+                f"selected Rust step did not return to CodeLLDB: {rust_stop}"
+            )
+        live = _stack(client, rust_thread)
+        project_frame = next(
+            (
+                frame
+                for frame in live
+                if (frame.get("source") or {}).get("path")
+                == str(RUST_OUTER_SOURCE)
+            ),
+            None,
+        )
+        live_id = project_frame.get("id") if isinstance(project_frame, dict) else None
+        if not isinstance(live_id, int) or _evaluate(client, live_id, "1 + 1") != "2":
+            raise DapError(
+                f"CodeLLDB did not own the returned Rust frame: {project_frame}"
+            )
+    finally:
+        client.close()
+
+
 def main() -> int:
     cases = (
         ("AC-DP-01", lambda: full_python_evaluation()[0].close()),
@@ -556,6 +1191,14 @@ def main() -> int:
         ("AC-DP-08", rust_outer_cross_language_step_in),
         ("AC-DP-09", live_python_assignment),
         ("AC-DP-10", live_rust_assignment),
+        ("AC-DP-11", rust_stop_to_live_debugpy_frame),
+        ("AC-DP-12", python_stop_to_live_codelldb_frame),
+        ("AC-DP-13", child_rust_stop_to_live_debugpy_frame),
+        ("AC-DP-14", child_user_breakpoint_preserves_debugpy_handoff),
+        ("AC-DP-15", dynamic_native_call_hands_off_without_name_discovery),
+        ("AC-DP-16", python_worker_rust_stop_returns_to_same_debugpy_thread),
+        ("AC-DP-17", rust_worker_python_frame_uses_same_debugpy_thread),
+        ("AC-DP-18", selected_rust_frame_step_returns_to_codelldb),
     )
     results: dict[str, bool] = {}
     for criterion, case in cases:
