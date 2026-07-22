@@ -1199,7 +1199,10 @@ def rust_worker_selected_rust_frame_steps_on_same_native_thread() -> None:
                 for frame in live
                 if (frame.get("source") or {}).get("path")
                 == str(RUST_THREADED_SOURCE)
-                and "rust_outer::{closure" in str(frame.get("name", ""))
+                # CodeLLDB can render the Rust closure segment as either
+                # `{closure#0}` or `{{closure}}`; the source-backed outer
+                # function identifies the same native worker frame in both.
+                and "rust_outer" in str(frame.get("name", ""))
             ),
             None,
         )

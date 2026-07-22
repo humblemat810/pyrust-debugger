@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Thread, current_thread
 import time
 from typing import Any, Callable, Mapping
 
@@ -980,6 +980,11 @@ class PythonProcessManager:
             self._handoff_steps.clear()
         for session in sessions:
             session.transport.close()
+        # The registry may be a short-lived launch directory.  Do not return
+        # until its watcher has observed `_stop`, otherwise it can race the
+        # caller's cleanup and recreate a marker in a removed directory.
+        if self._watcher is not current_thread():
+            self._watcher.join(timeout=1)
 
     def _watch_registry(self) -> None:
         while True:
