@@ -133,17 +133,20 @@ process still has one active debugger owner:
 - At a Python-owned stop, debugpy provides normal Python evaluation, imports,
   function calls, object expansion, and Python stepping.
 - At a Rust-owned stop, CodeLLDB provides normal Rust evaluation and native
-  debugging. Python frames recovered from that stop are read-only snapshots.
+  debugging. Selecting a recovered Python frame in a `(debugpy)` launch
+  transfers that exact PID/TID to a real debugpy stop for live Python scopes,
+  imports, calls, object expansion, evaluation, and assignment.
 
-Snapshot Python frames support primitive locals and the documented safe
-expression subset, such as `value + 1`. They do not execute code in CPython,
-so expressions such as `import sys`, function calls, object mutation, and
-arbitrary imports are expected to fail. Use a `(debugpy)` launch configuration
-and stop at a Python breakpoint when full Python evaluation is required.
+At that transferred stop, `stepIn` returns to the current CodeLLDB Rust frame.
+`next` and `stepOut` are not yet supported when the selected Python frame is
+physically suspended inside the Rust call; PyRust reports an explicit error
+instead of exposing its injected helper frame. With `pyrustPythonDebug: false`,
+the legacy snapshot path remains limited to primitive locals and the safe
+expression subset.
 
-This is an execution-ownership boundary, not a missing UI toggle. Showing a
-Python frame nested in a Rust-owned stack does not make debugpy safe to query
-while CodeLLDB has externally frozen the process.
+This remains an execution-ownership boundary, not simultaneous control by both
+debuggers. PyRust performs an explicit ownership transfer before querying the
+foreign-language engine.
 
 The two executable research fixtures and observed CodeLLDB results are
 documented in [the fixture report](docs/research/fixture-results.md).

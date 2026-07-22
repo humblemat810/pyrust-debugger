@@ -113,17 +113,26 @@ cache invalidation complexity.
 - `scopes`: recognize synthetic frame IDs
 - `evaluate`: route live Python frame IDs to debugpy and Rust lease frames to
   CodeLLDB; a Python routing frame first transfers ownership to debugpy
-- `continue`, `next`, `stepIn`, `stepOut`, `pause`: route virtual Python
-  threads to debugpy and native threads to CodeLLDB
+- `continue`, `next`, `stepIn`, `stepOut`, `pause`: route ordinary virtual
+  Python stops to debugpy and native threads to CodeLLDB
+- `stepIn` from a Python frame transferred out of a Rust-owned stop: resume
+  debugpy's handoff helper, suppress its internal stops, and expose the
+  reacquired CodeLLDB Rust frame
 
 The coordinator's frame routing table is explicit:
 
 | Exposed frame | Owner | Supported operations |
 | --- | --- | --- |
 | Native CodeLLDB ID | CodeLLDB | Rust variables, expressions, source/disassembly, native stepping |
-| Virtual debugpy ID | debugpy | Python variables, imports, calls, expressions, Python stepping |
+| Virtual debugpy ID | debugpy | Python variables, imports, calls, expressions, and ordinary Python stepping |
 | Stop-scoped Python routing ID | PyRust -> debugpy handoff | Activates a real debugpy stop before frame interaction |
 | Rust lease ID | PyRust -> CodeLLDB lease | Reacquires CodeLLDB, resolves the native frame, and routes native operations |
+
+A transferred Python frame that is physically suspended inside a Rust call
+supports live debugpy evaluation and assignment. `stepIn` returns to the real
+CodeLLDB Rust frame. `next` and `stepOut` at that exact boundary are rejected
+rather than exposing the injected handoff frame; they require a future
+two-engine run-to-line transaction.
 
 The built-in VS Code Call Stack is authoritative for frame selection. A custom
 Process Tree can navigate source and display ownership, but it cannot set

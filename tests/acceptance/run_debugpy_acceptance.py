@@ -63,6 +63,7 @@ CRITERIA = (
     "AC-DP-16",
     "AC-DP-17",
     "AC-DP-18",
+    "AC-DP-19",
 )
 
 
@@ -1179,6 +1180,79 @@ def selected_rust_frame_step_returns_to_codelldb() -> None:
         client.close()
 
 
+def selected_python_frame_step_in_returns_to_codelldb() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=RUST_OUTER_BINARY,
+            args=[],
+            env={"LD_LIBRARY_PATH": _python_libdir()},
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, RUST_OUTER_SOURCE, 8)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        rust_stop = client.event("stopped", timeout=30)
+        rust_thread = rust_stop.get("body", {}).get("threadId")
+        if not isinstance(rust_thread, int):
+            raise DapError(f"Python-step Rust stop had no thread: {rust_stop}")
+        python_frame = next(
+            (
+                frame
+                for frame in _stack(client, rust_thread)
+                if frame.get("name") == "python_inner"
+                and (frame.get("source") or {}).get("path")
+                == str(EMBEDDED_PYTHON_SOURCE)
+            ),
+            None,
+        )
+        if not isinstance(python_frame, dict):
+            raise DapError("Rust stop had no selectable Python frame")
+        client.response(
+            client.send("scopes", {"frameId": python_frame["id"]}),
+            timeout=10,
+        )
+
+        python_stop = client.event("stopped", timeout=30)
+        python_thread = python_stop.get("body", {}).get("threadId")
+        if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
+            raise DapError(
+                f"selected Python frame was not owned by debugpy: {python_stop}"
+            )
+        live_python = _stack(client, python_thread)[0]
+        if live_python.get("name") != "python_inner":
+            raise DapError(f"debugpy selected the wrong Python frame: {live_python}")
+
+        client.response(
+            client.send("stepIn", {"threadId": python_thread}),
+            timeout=10,
+        )
+        stepped = client.event("stopped", timeout=30)
+        stepped_thread = stepped.get("body", {}).get("threadId")
+        if (
+            stepped.get("body", {}).get("reason") != "step"
+            or not isinstance(stepped_thread, int)
+            or stepped_thread >= 1_600_000_000
+        ):
+            raise DapError(
+                f"Python-to-Rust step did not return to CodeLLDB: {stepped}"
+            )
+        live_rust = _stack(client, stepped_thread)
+        top = live_rust[0] if live_rust else {}
+        if (
+            top.get("name") != "rust_outer_python_inner::rust_callback"
+            or (top.get("source") or {}).get("path") != str(RUST_OUTER_SOURCE)
+        ):
+            raise DapError(f"Python-to-Rust step stopped in the wrong frame: {top}")
+        if not any(frame.get("name") == "python_inner" for frame in live_rust):
+            raise DapError("Python-to-Rust step lost the Python caller")
+    finally:
+        client.close()
+
+
 def main() -> int:
     cases = (
         ("AC-DP-01", lambda: full_python_evaluation()[0].close()),
@@ -1199,6 +1273,7 @@ def main() -> int:
         ("AC-DP-16", python_worker_rust_stop_returns_to_same_debugpy_thread),
         ("AC-DP-17", rust_worker_python_frame_uses_same_debugpy_thread),
         ("AC-DP-18", selected_rust_frame_step_returns_to_codelldb),
+        ("AC-DP-19", selected_python_frame_step_in_returns_to_codelldb),
     )
     results: dict[str, bool] = {}
     for criterion, case in cases:

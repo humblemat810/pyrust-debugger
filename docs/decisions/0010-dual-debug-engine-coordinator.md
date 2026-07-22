@@ -92,6 +92,10 @@ Limitations:
   native targets without a direct `rust_` call name are not yet inferred;
 - Rust-to-Python cross-language stepping still requires continuing to a
   configured Python breakpoint;
+- after a Rust-owned stop transfers an outer Python frame to debugpy, live
+  evaluation and assignment are supported and `stepIn` returns to CodeLLDB;
+  `next` and `stepOut` at that suspended-inside-Rust boundary are rejected
+  until a coordinated run-to-line transaction is implemented;
 - Process Tree selection is supplemental. The built-in Call Stack is the
   authoritative VS Code selection for Debug Console routing.
 
@@ -110,4 +114,5 @@ Limitations:
 - child-process handoff after a user breakpoint on the Python-to-Rust call line;
 - dynamic callable handoff without native-name discovery;
 - exact-thread handoff for Python-created and Rust-created workers;
+- selected Python-frame `stepIn` back to the current CodeLLDB Rust frame;
 - Python threads and child processes with virtualized IDs.

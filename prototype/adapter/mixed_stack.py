@@ -93,6 +93,8 @@ class MixedStackHooks(ProxyHooks):
         self._instruction_breakpoints: list[dict[str, Any]] = []
         self._temporary_native_return_process: int | None = None
         self._python_handoffs: set[tuple[int, int]] = set()
+        self._python_step_in_processes: set[int] = set()
+        self._python_step_in_suppress_python: set[int] = set()
         self._native_maintenance: dict[int, Event] = {}
         self._native_suppress_continued: dict[int, Event] = {}
         self._native_active: dict[int, tuple[int, int]] = {}
@@ -165,6 +167,8 @@ class MixedStackHooks(ProxyHooks):
             self._instruction_breakpoints.clear()
             self._temporary_native_return_process = None
             self._python_handoffs.clear()
+            self._python_step_in_processes.clear()
+            self._python_step_in_suppress_python.clear()
             self._native_maintenance.clear()
             self._native_suppress_continued.clear()
             self._native_active.clear()
@@ -268,9 +272,25 @@ class MixedStackHooks(ProxyHooks):
             if maintenance is not None:
                 maintenance.set()
                 return None
+        python_step_in = False
+        if isinstance(process_id, int):
+            with self._lock:
+                python_step_in = process_id in self._python_step_in_processes
+                if python_step_in:
+                    self._python_step_in_processes.discard(process_id)
+                    self._python_handoffs = {
+                        key for key in self._python_handoffs if key[0] != process_id
+                    }
+            if python_step_in:
+                event = deepcopy(event)
+                body = dict(event.get("body") or {})
+                body["reason"] = "step"
+                body["description"] = "Stepped from Python into Rust"
+                event["body"] = body
         if (
             isinstance(process_id, int)
             and isinstance(thread_id, int)
+            and not python_step_in
             and self._is_python_handoff_process(process_id)
         ):
             manager = self._process_manager
@@ -435,6 +455,36 @@ class MixedStackHooks(ProxyHooks):
         python_manager = self._python_manager
         if python_manager is not None and python_manager.owns_thread(thread_id):
             assert isinstance(thread_id, int)
+            if python_manager.is_handoff_exposed(thread_id):
+                command = str(request.get("command"))
+                if command != "stepIn":
+                    return LocalResponse(
+                        success=False,
+                        message=(
+                            f"{command} is not yet supported while Python is "
+                            "suspended inside a Rust call; use stepIn to return "
+                            "to the live Rust frame or Continue"
+                        ),
+                    )
+                process_id: int | None = None
+                try:
+                    process_id, _native_thread_id = (
+                        python_manager.native_identity_for_thread(thread_id)
+                    )
+                    with self._lock:
+                        self._python_step_in_processes.add(process_id)
+                        self._python_step_in_suppress_python.add(process_id)
+                    response = python_manager.continue_thread(
+                        thread_id,
+                        single_thread=True,
+                    )
+                except PythonTransportError as error:
+                    if process_id is not None:
+                        with self._lock:
+                            self._python_step_in_processes.discard(process_id)
+                            self._python_step_in_suppress_python.discard(process_id)
+                    return LocalResponse(success=False, message=str(error))
+                return LocalResponse(body=dict(response.get("body") or {}))
             process_id = context.state.process_id_for_thread(thread_id)
             if isinstance(process_id, int):
                 self._release_native_lease(process_id, context)
@@ -1743,6 +1793,27 @@ class MixedStackHooks(ProxyHooks):
     ) -> None:
         if event == "stopped":
             process_id = body.get("systemProcessId")
+            with self._lock:
+                python_step_in = (
+                    isinstance(process_id, int)
+                    and process_id in self._python_step_in_suppress_python
+                )
+            if python_step_in:
+                thread_id = body.get("threadId")
+                manager = self._python_manager
+                if manager is not None and manager.owns_thread(thread_id):
+                    assert isinstance(thread_id, int)
+                    try:
+                        manager.continue_thread(thread_id, single_thread=True)
+                    except PythonTransportError as error:
+                        with self._lock:
+                            self._python_step_in_processes.discard(process_id)
+                            self._python_step_in_suppress_python.discard(process_id)
+                        context.send_output(
+                            f"PyRust Python-to-Rust step failed: {error}\n",
+                            category="stderr",
+                        )
+                return
             if isinstance(process_id, int):
                 with self._lock:
                     self._python_handoffs = {
