@@ -29,6 +29,9 @@ MULTIPROCESS_WORKER = ROOT / "tests" / "acceptance" / "multiprocess_worker.py"
 DYNAMIC_CALL_DRIVER = (
     ROOT / "tests" / "acceptance" / "dynamic_call_fixture_driver.py"
 )
+ARBITRARY_BOUNDARY_DRIVER = (
+    ROOT / "tests" / "acceptance" / "arbitrary_boundary_fixture_driver.py"
+)
 RUST_OUTER_FIXTURE = ROOT / "research" / "fixtures" / "rust_outer"
 RUST_OUTER_TARGET = Path(
     os.environ.get("CARGO_TARGET_DIR", str(RUST_OUTER_FIXTURE / "target"))
@@ -76,6 +79,7 @@ CRITERIA = (
     "AC-DP-25",
     "AC-DP-26",
     "AC-DP-27",
+    "AC-DP-28",
 )
 
 
@@ -1452,6 +1456,62 @@ def rust_future_selected_rust_poll_frame_steps_in_codelldb() -> None:
         client.close()
 
 
+def arbitrary_pyo3_names_merge_and_handoff_to_debugpy() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=PYTHON,
+            args=[str(ARBITRARY_BOUNDARY_DRIVER)],
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, RUST_SOURCE, 39)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        rust_stop = client.event("stopped", timeout=30)
+        native_thread = rust_stop.get("body", {}).get("threadId")
+        if not isinstance(native_thread, int):
+            raise DapError(f"arbitrary-name Rust stop had no thread: {rust_stop}")
+        frames = _stack(client, native_thread)
+        names = [str(frame.get("name", "")) for frame in frames]
+        if not (
+            any("calculate_leaf" in name for name in names)
+            and any("dispatch_payload" in name for name in names)
+        ):
+            raise DapError(f"arbitrary Rust callees were missing: {names[:12]}")
+        routing = next(
+            (
+                frame
+                for frame in frames
+                if frame.get("name") == "handle_event"
+                and (frame.get("source") or {}).get("path")
+                == str(ARBITRARY_BOUNDARY_DRIVER)
+            ),
+            None,
+        )
+        if not isinstance(routing, dict):
+            raise DapError(f"arbitrary Python caller was not merged: {names[:12]}")
+        client.response(client.send("scopes", {"frameId": routing["id"]}), timeout=10)
+
+        python_stop = client.event("stopped", timeout=45)
+        python_thread = python_stop.get("body", {}).get("threadId")
+        if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
+            raise DapError(f"arbitrary Python caller was not debugpy-owned: {python_stop}")
+        live = _stack(client, python_thread)[0]
+        frame_id = live.get("id")
+        if (
+            live.get("name") != "handle_event"
+            or not isinstance(frame_id, int)
+            or _evaluate(client, frame_id, "request_label") != "'arbitrary-boundary'"
+            or _evaluate(client, frame_id, "request_value") != "35"
+        ):
+            raise DapError(f"arbitrary Python caller was not live: {live}")
+    finally:
+        client.close()
+
+
 def _selected_rust_frame_step(command: str) -> None:
     client = DapClient(proxy_command())
     try:
@@ -1709,6 +1769,7 @@ def main() -> int:
         ("AC-DP-25", asyncio_task_live_debugpy_returns_to_same_rust_thread),
         ("AC-DP-26", rust_futures_use_live_debugpy_python_stepping),
         ("AC-DP-27", rust_future_selected_rust_poll_frame_steps_in_codelldb),
+        ("AC-DP-28", arbitrary_pyo3_names_merge_and_handoff_to_debugpy),
     )
     results: dict[str, bool] = {}
     for criterion, case in cases:

@@ -96,19 +96,24 @@ in-process unwinds with a session circuit breaker and proves this reverse stack
 at an explicit Rust callback breakpoint. ADR 0009 adds opt-in debugpy Python
 breakpoints and full Python evaluation for this direction.
 
-## MVP boundary
+## Supported boundary
 
-The first milestone remains native-debugger-first:
+The implemented prototype supports:
 
 - launch Python under CodeLLDB;
 - stop at a Rust breakpoint;
 - show active Python frames and native Rust frames in one VS Code call stack;
-- support CPython 3.14 on Linux first.
+- transfer a selected Python frame to debugpy and a selected Rust frame to
+  CodeLLDB for live evaluation, assignment, and stepping;
+- preserve PID/TID ownership across supported threads and child processes;
+- recognize PyO3/CPython bridge symbols without depending on application
+  function names; and
+- support CPython 3.14.6 on Linux x86_64.
 
-Python breakpoints are available in opt-in debugpy launch configurations.
-Cross-language stepping remains a later milestone. ADR 0005 provides bounded
-read-only snapshots for Python frames at native stops, while ADR 0009 adds
-full debugpy evaluation at Python-owned stops. See
+The structural boundary classifier is proven for PyO3 extension and embedded
+interpreter stacks. It is not a general classifier for every Python/Rust FFI
+technology. Multiple interpreters, free-threaded CPython, and suspended async
+task/future graphs remain outside the proven scope. See
 [the documentation index](docs/README.md).
 
 ## Full Python Debugging

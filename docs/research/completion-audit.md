@@ -133,6 +133,7 @@ evidence is:
 | Python and Rust stepping respect selected-frame ownership | `AC-DP-06`, `AC-DP-08`, `AC-DP-18` through `AC-DP-23` | Complete for supported fixtures |
 | Threads and processes keep PID/TID ownership | `AC-DP-03`, `AC-DP-04`, `AC-DP-13` through `AC-DP-17`, `AC-DP-24` | Complete for supported fixtures |
 | Active async frames use their real debugger | `AC-DP-25` through `AC-DP-27`, `AC-AT-01` through `AC-AT-04`, `AC-RA-01` through `AC-RA-04` | Complete for active physical stacks |
+| Application function names do not define the boundary | `AC-DP-28`, structural unit and reverse-contract tests | Complete for recognizable PyO3/CPython bridge stacks |
 | Restart restores both engines | `AC-DP-07` | Complete for supported fixture |
 | Clean Dev Container is repeatable | `AC-CV-01` through `AC-CV-10`, rerun on 2026-07-22 | Complete |
 | VSIX compiles, packages, and activates | `./scripts/verify-submission.sh`, `AC-CV-04`, `AC-CV-08`, `AC-CV-09` | Complete |
@@ -144,11 +145,13 @@ claim simultaneous control by debugpy and CodeLLDB.
 
 ### Remaining Product Gap
 
-The invariant is proven for the repository's CPython 3.14.6 / PyO3 fixtures,
-including threads, child processes, and active coroutine/future stacks. It is
-not yet proven for arbitrary mixed projects because native boundary discovery
-still recognizes fixture-shaped Rust stack prefixes such as `rust_inner`,
-`rust_outer`, and `rust_callback`. Suspended async tasks/futures are also not
-enumerated or presented as an await graph. These limits must remain explicit;
-the supported fixture completion evidence must not be described as universal
-arbitrary-project support.
+The invariant is proven for CPython 3.14.6 / PyO3 stacks on Linux x86_64,
+including the repository fixtures, unrelated application function names,
+threads, child processes, and active coroutine/future stacks. Boundary
+discovery now uses generated PyO3 and CPython bridge symbols rather than
+fixture-shaped Rust or Python names.
+
+This is still not universal arbitrary-project support. Non-PyO3/custom FFI
+bridges, multiple interpreters, free-threaded CPython, and missing native debug
+information have not been proven. Suspended async tasks/futures are not
+enumerated or presented as an await graph. These limits must remain explicit.

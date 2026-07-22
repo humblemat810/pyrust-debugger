@@ -40,8 +40,9 @@ class _ReverseContractFixture:
     def __init__(self) -> None:
         self.native = [
             {"id": 101, "name": "rust_outer_python_inner::rust_callback"},
-            {"id": 102, "name": "rust_outer_python_inner::rust_outer"},
-            {"id": 103, "name": "rust_outer_python_inner::main"},
+            {"id": 102, "name": "_PyFunction_Vectorcall"},
+            {"id": 103, "name": "rust_outer_python_inner::rust_outer"},
+            {"id": 104, "name": "rust_outer_python_inner::main"},
         ]
         self.state = ProxySessionState()
         self.state.on_stopped()
@@ -113,7 +114,7 @@ class ReverseStabilizationContractTests(unittest.TestCase):
             self.assertTrue(
                 all(
                     response.body
-                    == {"stackFrames": fixture.native, "totalFrames": 3}
+                    == {"stackFrames": fixture.native, "totalFrames": 4}
                     for response in responses
                 )
             )
@@ -271,7 +272,7 @@ class ReverseStabilizationContractTests(unittest.TestCase):
                     "rust_outer_python_inner::rust_callback",
                     "python_inner",
                     "python_outer",
-                    "rust_outer_python_inner::rust_outer",
+                    "_PyFunction_Vectorcall",
                 ],
             )
             self.assertNotEqual(merged_frames[1]["id"], old_synthetic_id)
@@ -309,7 +310,7 @@ class ReverseShapeContractTests(unittest.TestCase):
 
         self.assertTrue(response.success)
         assert response.body is not None
-        self.assertEqual(response.body["totalFrames"], 6)
+        self.assertEqual(response.body["totalFrames"], 7)
         self.assertEqual(
             [frame["name"] for frame in response.body["stackFrames"]],
             ["python_inner", "python_outer", "<module>"],
@@ -402,7 +403,7 @@ class ReverseShapeContractTests(unittest.TestCase):
         fixture = _ReverseContractFixture()
         fixture.native = [
             {"id": 101, "name": "rust_outer_python_inner::rust_callback"},
-            {"id": 102, "name": "_PyFunction_Vectorcall"},
+            {"id": 102, "name": "application::native_helper"},
             {"id": 103, "name": "rust_outer_python_inner::main"},
         ]
         fixture.proxy.native_frames = fixture.native

@@ -33,10 +33,24 @@ fn rust_outer_with_rust_threads(py: Python<'_>, value: i64) -> PyResult<i64> {
     Ok(total)
 }
 
+#[pyfunction]
+#[inline(never)]
+fn calculate_leaf(payload: i64) -> i64 {
+    std::hint::black_box(payload + 7)
+}
+
+#[pyfunction]
+#[inline(never)]
+fn dispatch_payload(payload: i64) -> i64 {
+    calculate_leaf(payload)
+}
+
 #[pymodule]
 fn pyrust_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(rust_inner, module)?)?;
     module.add_function(wrap_pyfunction!(rust_outer, module)?)?;
     module.add_function(wrap_pyfunction!(rust_outer_with_rust_threads, module)?)?;
+    module.add_function(wrap_pyfunction!(calculate_leaf, module)?)?;
+    module.add_function(wrap_pyfunction!(dispatch_payload, module)?)?;
     Ok(())
 }

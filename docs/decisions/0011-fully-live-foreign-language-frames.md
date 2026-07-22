@@ -116,7 +116,7 @@ The slice is complete only when automated and manual tests prove:
 7. Thread, process, async, restart, and cross-language breakpoint handoff
    acceptance remain green.
 
-Automated evidence is `AC-DP-11` through `AC-DP-27`:
+Automated evidence is `AC-DP-11` through `AC-DP-28`:
 
 - direct and child-process Rust-stop to live-debugpy transfers;
 - a prior Python breakpoint followed by Python -> Rust -> Python ownership;
@@ -129,4 +129,11 @@ Automated evidence is `AC-DP-11` through `AC-DP-27`:
 - lazy debugpy-to-native TID resolution for a Rust-created worker thread;
 - repeated live ownership transfer across two Python `asyncio` tasks;
 - live debugpy `next` and `stepOut` across two Rust futures; and
-- live CodeLLDB stepping of a retained Rust async poll frame.
+- live CodeLLDB stepping of a retained Rust async poll frame; and
+- structural PyO3/CPython boundary discovery with application function names
+  unrelated to the original fixtures.
+
+The last criterion proves that routing does not depend on names such as
+`rust_inner`, `rust_outer`, `rust_callback`, `python_inner`, or
+`python_outer`. It does not prove arbitrary non-PyO3 FFI bridges, multiple
+interpreters, or free-threaded CPython.

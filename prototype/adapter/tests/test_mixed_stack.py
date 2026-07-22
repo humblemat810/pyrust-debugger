@@ -376,13 +376,14 @@ class MixedStackHooksTests(unittest.TestCase):
             },
         ]
 
-        self.assertEqual(MixedStackHooks._fixture_insertion_index(native, python), 1)
+        self.assertEqual(MixedStackHooks._python_boundary_index(native), 1)
 
     def test_rust_outer_pages_after_crossing_both_language_boundaries(
         self,
     ) -> None:
         reverse_native = [
             {"id": 201, "name": "rust_outer_python_inner::rust_callback"},
+            {"id": 202, "name": "_PyFunction_Vectorcall"},
             {"id": 207, "name": "rust_outer_python_inner::rust_outer"},
             {"id": 208, "name": "rust_outer_python_inner::main"},
         ]
@@ -414,14 +415,14 @@ class MixedStackHooksTests(unittest.TestCase):
 
         self.assertTrue(response.success)
         assert response.body is not None
-        self.assertEqual(response.body["totalFrames"], 5)
+        self.assertEqual(response.body["totalFrames"], 6)
         self.assertEqual(
             [frame["name"] for frame in response.body["stackFrames"]],
             [
                 "rust_outer_python_inner::rust_callback",
                 "python_inner",
                 "python_outer",
-                "rust_outer_python_inner::rust_outer",
+                "_PyFunction_Vectorcall",
             ],
         )
         self.assertEqual(self.proxy.stack_arguments, [{"threadId": 77}])
@@ -429,6 +430,7 @@ class MixedStackHooksTests(unittest.TestCase):
     def test_rust_outer_allows_an_embedded_module_frame(self) -> None:
         reverse_native = [
             {"id": 201, "name": "rust_outer_python_inner::rust_callback"},
+            {"id": 202, "name": "_PyFunction_Vectorcall"},
             {"id": 207, "name": "rust_outer_python_inner::rust_outer"},
             {"id": 208, "name": "rust_outer_python_inner::main"},
         ]
@@ -462,18 +464,19 @@ class MixedStackHooksTests(unittest.TestCase):
                 "python_inner",
                 "python_outer",
                 "<module>",
+                "_PyFunction_Vectorcall",
                 "rust_outer_python_inner::rust_outer",
                 "rust_outer_python_inner::main",
             ],
         )
 
-    def test_unknown_rust_outer_boundary_returns_original_native_stack(
+    def test_unrelated_function_names_merge_at_structural_python_bridge(
         self,
     ) -> None:
         unknown_native = [
-            {"id": 201, "name": "rust_outer_python_inner::rust_callback"},
+            {"id": 201, "name": "application::serve_request"},
             {"id": 202, "name": "_PyFunction_Vectorcall"},
-            {"id": 208, "name": "rust_outer_python_inner::main"},
+            {"id": 208, "name": "application::run_server"},
         ]
         self.proxy.native_frames = unknown_native
         stacks = (
@@ -497,11 +500,16 @@ class MixedStackHooksTests(unittest.TestCase):
 
         self.assertTrue(response.success)
         self.assertEqual(
-            response.body,
-            {"stackFrames": unknown_native, "totalFrames": 3},
+            [frame["name"] for frame in response.body["stackFrames"]],
+            [
+                "application::serve_request",
+                "python_inner",
+                "python_outer",
+                "_PyFunction_Vectorcall",
+                "application::run_server",
+            ],
         )
-        self.assertEqual(len(self.proxy.outputs), 1)
-        self.assertIn("helper failure", self.proxy.outputs[0].lower())
+        self.assertEqual(self.proxy.outputs, [])
 
     def test_incomplete_rust_outer_python_boundary_returns_native_stack(
         self,

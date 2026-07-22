@@ -220,6 +220,13 @@ Algorithm:
 For one Python -> Rust boundary, CPython 3.14 `RemoteUnwinder` plus a native
 eval-frame boundary is sufficient.
 
+The implemented classifier inserts active Python frames at the first
+recognized PyO3/CPython bridge below the stopped native user callees. It
+recognizes generated PyO3 function/method trampolines and CPython
+vectorcall/eval symbols. Application function names are deliberately ignored:
+`AC-DP-28` proves the merge and live debugpy handoff with unrelated
+`calculate_leaf`, `dispatch_payload`, and `handle_event` names.
+
 For repeated transitions, use py-spy-style markers:
 
 - CPython eval-frame native symbols identify insertion points;
@@ -227,9 +234,10 @@ For repeated transitions, use py-spy-style markers:
 - Python 3.12+ shim frames terminate one block;
 - ordinary native frames remain in native order.
 
-The 3.14.6 private `RemoteUnwinder` API does not expose these block markers.
-The research spike must either obtain them through a richer sidecar or use
-py-spy's merged address/frame ordering as an oracle.
+The 3.14.6 private `RemoteUnwinder` API does not expose full block markers.
+Consequently, the current classifier proves the active physical PyO3 boundary
+but does not claim generalized ordering for arbitrary non-PyO3 FFI stacks,
+multiple interpreters, or suspended coroutine/future graphs.
 
 ### Python -> Rust expected shape
 
@@ -313,5 +321,7 @@ Initial settings:
 4. Rust-outer/Python-inner fixture.
 5. Python frame locals through bounded remote primitive reading. Implemented
    for the fixed CPython 3.14.6 Linux fixtures by ADR 0005.
-6. cross-language destination discovery beyond the implemented direct
-   `rust_*` call handoff from a debugpy Python stop to a CodeLLDB Rust stop.
+6. Live two-engine frame ownership and stepping. Implemented for the supported
+   CPython 3.14.6 / PyO3 Linux topology by ADR 0011.
+7. Broader non-PyO3 bridge classification, multiple interpreters,
+   free-threaded CPython, and suspended async graph presentation.

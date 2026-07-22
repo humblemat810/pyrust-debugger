@@ -1505,10 +1505,9 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
         synthetic_epoch: int | None,
     ) -> list[dict[str, Any]]:
-        insertion_index = MixedStackHooks._fixture_insertion_index(
-            native_frames,
-            python_frames,
-        )
+        insertion_index = MixedStackHooks._python_boundary_index(native_frames)
+        if insertion_index is None or not python_frames:
+            raise HelperFailure("native Python/Rust boundary was not found")
 
         synthetic: list[dict[str, Any]] = []
         for index, frame in enumerate(python_frames):
@@ -1545,67 +1544,44 @@ class MixedStackHooks(ProxyHooks):
         )
 
     @staticmethod
-    def _fixture_insertion_index(
+    def _python_boundary_index(
         native_frames: list[dict[str, Any]],
-        python_frames: list[dict[str, Any]],
-    ) -> int:
-        names = [str(frame.get("name", "")) for frame in native_frames]
-        leaves = [MixedStackHooks._frame_leaf(frame) for frame in native_frames]
-        if leaves[:2] == ["rust_inner", "rust_outer"]:
-            return 2
+    ) -> int | None:
+        """Locate the first PyO3/CPython bridge below native user callees."""
 
-        if leaves[:1] != ["rust_callback"]:
-            raise HelperFailure(
-                f"native fixture boundary was not found: {leaves[:2]!r}"
-            )
-        python_names = [str(frame.get("name", "")) for frame in python_frames]
-        if python_names[:2] != ["python_inner", "python_outer"]:
-            raise HelperFailure(
-                f"Rust-outer Python boundary was not found: {python_names!r}"
-            )
-        try:
-            rust_outer_index = next(
-                index
-                for index, name in enumerate(names[1:], start=1)
-                if "rust_outer" in name
-            )
-        except ValueError as error:
-            raise HelperFailure(
-                "Rust-outer fixture boundary was not found"
-            ) from error
-        if not any(
-            name.endswith("::main") or "::main::" in name
-            for name in names[rust_outer_index + 1 :]
-        ):
-            raise HelperFailure("Rust-outer fixture entry boundary was not found")
-        return 1
+        for index, frame in enumerate(native_frames):
+            if index == 0:
+                continue
+            name = str(frame.get("name", "")).lower()
+            if any(
+                marker in name
+                for marker in (
+                    "__pyfunction_",
+                    "__pymethod_",
+                    "pyo3::impl_::trampoline",
+                    "_pyfunction_vectorcall",
+                    "_pyeval_",
+                    "pyeval_",
+                )
+            ):
+                return index
+        return None
 
     @staticmethod
     def _is_mixed_stack_candidate(
         native_frames: list[dict[str, Any]],
     ) -> bool:
-        leaves = [MixedStackHooks._frame_leaf(frame) for frame in native_frames]
-        return leaves[:2] == ["rust_inner", "rust_outer"] or leaves[:1] == [
-            "rust_callback"
-        ]
+        return MixedStackHooks._python_boundary_index(native_frames) is not None
 
     @staticmethod
     def _can_restore_debugpy_snapshot(
         native_frames: list[dict[str, Any]],
         python_frames: list[dict[str, Any]],
     ) -> bool:
-        if [MixedStackHooks._frame_leaf(frame) for frame in native_frames[:1]] != [
-            "rust_callback"
-        ]:
-            return False
-        return [str(frame.get("name", "")) for frame in python_frames[:2]] == [
-            "python_inner",
-            "python_outer",
-        ]
-
-    @staticmethod
-    def _frame_leaf(frame: Mapping[str, Any]) -> str:
-        return str(frame.get("name", "")).rsplit("::", 1)[-1]
+        return (
+            MixedStackHooks._python_boundary_index(native_frames) is not None
+            and bool(python_frames)
+        )
 
     @staticmethod
     def _native_stack_arguments(
