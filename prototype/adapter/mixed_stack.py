@@ -458,14 +458,14 @@ class MixedStackHooks(ProxyHooks):
             if python_manager.is_handoff_exposed(thread_id):
                 command = str(request.get("command"))
                 if command != "stepIn":
-                    return LocalResponse(
-                        success=False,
-                        message=(
-                            f"{command} is not yet supported while Python is "
-                            "suspended inside a Rust call; use stepIn to return "
-                            "to the live Rust frame or Continue"
-                        ),
-                    )
+                    try:
+                        response = python_manager.begin_handoff_step(
+                            thread_id,
+                            command,
+                        )
+                    except PythonTransportError as error:
+                        return LocalResponse(success=False, message=str(error))
+                    return LocalResponse(body=dict(response.get("body") or {}))
                 process_id: int | None = None
                 try:
                     process_id, _native_thread_id = (

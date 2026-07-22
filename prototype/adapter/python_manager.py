@@ -61,6 +61,16 @@ class _VariableRoute:
     variables_reference: int
 
 
+@dataclass(frozen=True)
+class _HandoffStep:
+    command: str
+    thread_id: int
+    target_name: str
+    target_path: str
+    target_line: int
+    breakpoint_record: dict[str, Any]
+
+
 class PythonProcessManager:
     """Attach a private debugpy adapter to every registered Python process."""
 
@@ -112,6 +122,7 @@ class PythonProcessManager:
         self._handoff_exposed: set[int] = set()
         self._handoff_user_resuming: set[int] = set()
         self._handoff_resolving: set[int] = set()
+        self._handoff_steps: dict[int, _HandoffStep] = {}
         self._next_thread_id = _THREAD_ID_START
         self._next_frame_id = _FRAME_ID_START
         self._next_variable_reference = _VARIABLE_REFERENCE_START
@@ -171,6 +182,55 @@ class PythonProcessManager:
     def _all_breakpoints(self) -> list[dict[str, Any]]:
         return [dict(record) for record in self._breakpoints]
 
+    def _breakpoint_record_with_temporary_line(
+        self,
+        path: str,
+        line: int,
+    ) -> dict[str, Any]:
+        with self._lock:
+            existing = next(
+                (
+                    record
+                    for record in self._breakpoints
+                    if record["source"]["path"] == path
+                ),
+                None,
+            )
+        breakpoints = [
+            dict(item)
+            for item in (existing or {}).get("breakpoints", ())
+            if isinstance(item, dict)
+        ]
+        if not any(item.get("line") == line for item in breakpoints):
+            breakpoints.append({"line": line})
+        return {
+            "source": {"path": path},
+            "breakpoints": breakpoints,
+            "sourceModified": bool((existing or {}).get("sourceModified", False)),
+        }
+
+    def _restore_handoff_breakpoint(self, process_id: int, step: _HandoffStep) -> None:
+        session = self._require_session(process_id)
+        with self._lock:
+            existing = next(
+                (
+                    record
+                    for record in self._breakpoints
+                    if record["source"]["path"] == step.target_path
+                ),
+                None,
+            )
+        record = (
+            dict(existing)
+            if existing is not None
+            else {
+                "source": {"path": step.target_path},
+                "breakpoints": [],
+                "sourceModified": False,
+            }
+        )
+        session.transport.request("setBreakpoints", record)
+
     def prepare_restart(self) -> None:
         """Retire old debugpy identities before CodeLLDB launches a new PID."""
 
@@ -190,6 +250,7 @@ class PythonProcessManager:
             self._handoff_exposed.clear()
             self._handoff_user_resuming.clear()
             self._handoff_resolving.clear()
+            self._handoff_steps.clear()
         for session in sessions:
             session.transport.close()
         for process_id in process_ids:
@@ -387,6 +448,73 @@ class PythonProcessManager:
             else None
         )
         return name if isinstance(name, str) and name.startswith("rust_") else None
+
+    def begin_handoff_step(self, thread_id: int, command: str) -> Message:
+        """Run a transferred Python frame to a real Python source location.
+
+        The CPython remote-debug helper sits above the user frame. Stepping it
+        directly exposes helper internals, so `next` and `stepOut` use a
+        temporary debugpy breakpoint at the requested user-level destination.
+        """
+
+        if command not in {"next", "stepOut"}:
+            raise PythonTransportError(f"unsupported handoff step {command!r}")
+        route = self._require_thread(thread_id)
+        session = self._require_session(route.process_id)
+        with self._lock:
+            handoff = self._handoff_targets.get(route.process_id)
+            exposed = route.process_id in self._handoff_exposed
+        if handoff is None or not exposed:
+            raise PythonTransportError("Python handoff is no longer active")
+        target_name, target_path = handoff
+        response = session.transport.request(
+            "stackTrace",
+            {"threadId": route.thread_id, "startFrame": 0, "levels": 200},
+        )
+        frames = (response.get("body") or {}).get("stackFrames")
+        if not isinstance(frames, list):
+            raise PythonTransportError("debugpy handoff stack is malformed")
+        target_index = next(
+            (
+                index
+                for index, frame in enumerate(frames)
+                if isinstance(frame, dict)
+                and frame.get("name") == target_name
+                and isinstance(frame.get("source"), dict)
+                and frame["source"].get("path") == target_path
+            ),
+            None,
+        )
+        if target_index is None:
+            raise PythonTransportError("debugpy lost the selected Python handoff frame")
+        selected_index = target_index if command == "next" else target_index + 1
+        selected = frames[selected_index] if selected_index < len(frames) else None
+        if not isinstance(selected, dict):
+            raise PythonTransportError("Python stepOut has no caller frame")
+        source = selected.get("source")
+        path = source.get("path") if isinstance(source, dict) else None
+        line = selected.get("line")
+        name = selected.get("name")
+        if (
+            not isinstance(path, str)
+            or not isinstance(line, int)
+            or line <= 0
+            or not isinstance(name, str)
+            or not name
+        ):
+            raise PythonTransportError("Python handoff step has no source location")
+        destination = _next_python_statement_line(path, line)
+        if destination is None:
+            raise PythonTransportError(
+                f"Python {command} has no following executable source line"
+            )
+        record = self._breakpoint_record_with_temporary_line(path, destination)
+        session.transport.request("setBreakpoints", record)
+        step = _HandoffStep(command, route.thread_id, name, path, destination, record)
+        with self._lock:
+            self._handoff_steps[route.process_id] = step
+            self._handoff_user_resuming.add(route.process_id)
+        return self._resume_thread("continue", thread_id, {"singleThread": True})
 
     def native_frame_route(self, frame_id: object) -> _FrameRoute | None:
         return self._frame_routes.get(frame_id) if isinstance(frame_id, int) else None
@@ -863,16 +991,27 @@ class PythonProcessManager:
             with self._lock:
                 exposed = process_id in self._handoff_exposed
                 user_resuming = process_id in self._handoff_user_resuming
-                if exposed and user_resuming:
+                step_pending = process_id in self._handoff_steps
+                if exposed and user_resuming and not step_pending:
                     self._handoff_targets.pop(process_id, None)
                     self._handoff_exposed.discard(process_id)
                     self._handoff_user_resuming.discard(process_id)
         if name == "stopped":
             with self._lock:
+                step = self._handoff_steps.get(process_id)
                 targeted = process_id in self._handoff_targets
                 resolving = process_id in self._handoff_resolving
-                if targeted and not resolving:
+                if (targeted or step is not None) and not resolving:
                     self._handoff_resolving.add(process_id)
+            if step is not None:
+                if not resolving:
+                    Thread(
+                        target=self._resolve_handoff_step,
+                        args=(process_id, body),
+                        name=f"pyrust-debugpy-step-{process_id}",
+                        daemon=True,
+                    ).start()
+                return
             if targeted:
                 if not resolving:
                     Thread(
@@ -948,6 +1087,96 @@ class PythonProcessManager:
             and was_python_owner
         ):
             self._emit_event("continued", body)
+
+    def _resolve_handoff_step(
+        self,
+        process_id: int,
+        body: dict[str, Any],
+    ) -> None:
+        """Hide remote-helper stops until debugpy reaches the user target."""
+
+        try:
+            session = self._require_session(process_id)
+            with self._lock:
+                step = self._handoff_steps.get(process_id)
+            if step is None:
+                return
+            response = session.transport.request("threads")
+            threads = (response.get("body") or {}).get("threads")
+            target_thread_id: int | None = None
+            if isinstance(threads, list):
+                for thread in threads:
+                    candidate = thread.get("id") if isinstance(thread, dict) else None
+                    if not isinstance(candidate, int) or candidate <= 0:
+                        continue
+                    stack = session.transport.request(
+                        "stackTrace",
+                        {"threadId": candidate, "startFrame": 0, "levels": 200},
+                    )
+                    frames = (stack.get("body") or {}).get("stackFrames")
+                    if not isinstance(frames, list):
+                        continue
+                    if any(
+                        isinstance(frame, dict)
+                        and frame.get("name") == step.target_name
+                        and frame.get("line") == step.target_line
+                        and isinstance(frame.get("source"), dict)
+                        and frame["source"].get("path") == step.target_path
+                        for frame in frames
+                    ):
+                        target_thread_id = candidate
+                        break
+            if target_thread_id is None:
+                # The helper's pause/breakpoint is not user-visible. Continue
+                # the selected Python thread until its temporary source
+                # breakpoint is reached.
+                session.resume_ready.clear()
+                session.transport.request_async(
+                    "continue",
+                    {"threadId": step.thread_id, "singleThread": True},
+                    on_error=lambda error: self._on_resume_error(
+                        session,
+                        "handoff step continue",
+                        error,
+                    ),
+                    on_complete=session.resume_ready.set,
+                )
+                return
+            self._restore_handoff_breakpoint(process_id, step)
+            virtual_thread_id = self._record_thread(process_id, target_thread_id)
+            final_body = dict(body)
+            final_body.update(
+                {
+                    "reason": "step",
+                    "description": f"Python {step.command}",
+                    "threadId": virtual_thread_id,
+                    "systemProcessId": process_id,
+                }
+            )
+            with self._lock:
+                self._handoff_steps.pop(process_id, None)
+                self._handoff_targets.pop(process_id, None)
+                self._handoff_exposed.discard(process_id)
+                self._handoff_user_resuming.discard(process_id)
+            (self._registry_path / f"handoff-entered-{process_id}").unlink(
+                missing_ok=True
+            )
+            (self._registry_path / f"handoff-ready-{process_id}").unlink(
+                missing_ok=True
+            )
+            self._state.on_stopped({"body": final_body}, owner="python")
+            self._emit_event("stopped", final_body)
+        except PythonTransportError as error:
+            self._emit_event(
+                "output",
+                {
+                    "category": "stderr",
+                    "output": f"PyRust could not complete Python handoff step: {error}\n",
+                },
+            )
+        finally:
+            with self._lock:
+                self._handoff_resolving.discard(process_id)
 
     def _emit_targeted_handoff_stop(
         self,
@@ -1231,6 +1460,43 @@ class PythonProcessManager:
                 f"unknown debugpy variables reference {reference}"
             )
         return route
+
+
+def _next_python_statement_line(path: str, current_line: int) -> int | None:
+    """Find the following statement in the innermost source block."""
+
+    try:
+        tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return None
+    candidates: list[ast.AST] = [tree]
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if not isinstance(body, list):
+            continue
+        for statement in body:
+            start = getattr(statement, "lineno", None)
+            end = getattr(statement, "end_lineno", start)
+            if isinstance(start, int) and isinstance(end, int) and start <= current_line <= end:
+                candidates.append(node)
+                break
+    for container in reversed(candidates):
+        body = getattr(container, "body", None)
+        if not isinstance(body, list):
+            continue
+        for index, statement in enumerate(body):
+            start = getattr(statement, "lineno", None)
+            end = getattr(statement, "end_lineno", start)
+            if (
+                isinstance(start, int)
+                and isinstance(end, int)
+                and start <= current_line <= end
+                and index + 1 < len(body)
+            ):
+                next_line = getattr(body[index + 1], "lineno", None)
+                if isinstance(next_line, int) and next_line > 0:
+                    return next_line
+    return None
 
 
 def read_debugpy_registry(path: Path) -> tuple[dict[str, Any], ...]:

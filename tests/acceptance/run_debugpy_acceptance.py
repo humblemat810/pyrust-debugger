@@ -64,6 +64,8 @@ CRITERIA = (
     "AC-DP-17",
     "AC-DP-18",
     "AC-DP-19",
+    "AC-DP-20",
+    "AC-DP-21",
 )
 
 
@@ -1253,6 +1255,65 @@ def selected_python_frame_step_in_returns_to_codelldb() -> None:
         client.close()
 
 
+def _selected_python_handoff_step(command: str, line: int, name: str) -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=RUST_OUTER_BINARY,
+            args=[],
+            env={"LD_LIBRARY_PATH": _python_libdir()},
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, RUST_OUTER_SOURCE, 8)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        rust_stop = client.event("stopped", timeout=30)
+        rust_thread = rust_stop.get("body", {}).get("threadId")
+        if not isinstance(rust_thread, int):
+            raise DapError(f"Python {command} Rust stop had no thread: {rust_stop}")
+        routing = next(
+            (frame for frame in _stack(client, rust_thread) if frame.get("name") == "python_inner"),
+            None,
+        )
+        if not isinstance(routing, dict):
+            raise DapError("Rust stop had no selectable Python frame")
+        client.response(client.send("scopes", {"frameId": routing["id"]}), timeout=10)
+
+        python_stop = client.event("stopped", timeout=30)
+        python_thread = python_stop.get("body", {}).get("threadId")
+        if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
+            raise DapError(f"Python {command} handoff was not debugpy-owned")
+        client.response(client.send(command, {"threadId": python_thread}), timeout=10)
+
+        stepped = client.event("stopped", timeout=30)
+        stepped_thread = stepped.get("body", {}).get("threadId")
+        if not isinstance(stepped_thread, int) or stepped_thread < 1_600_000_000:
+            raise DapError(f"Python {command} left debugpy ownership: {stepped}")
+        top = _stack(client, stepped_thread)[0]
+        if (
+            stepped.get("body", {}).get("reason") != "step"
+            or top.get("name") != name
+            or top.get("line") != line
+            or (top.get("source") or {}).get("path") != str(EMBEDDED_PYTHON_SOURCE)
+        ):
+            raise DapError(f"Python {command} reached the wrong frame: {top}")
+        if _evaluate(client, top["id"], "value") not in {"20", "21"}:
+            raise DapError(f"Python {command} did not retain live debugpy locals")
+    finally:
+        client.close()
+
+
+def selected_python_frame_next_stays_in_debugpy() -> None:
+    _selected_python_handoff_step("next", 5, "python_inner")
+
+
+def selected_python_frame_step_out_stays_in_debugpy() -> None:
+    _selected_python_handoff_step("stepOut", 12, "python_outer")
+
+
 def main() -> int:
     cases = (
         ("AC-DP-01", lambda: full_python_evaluation()[0].close()),
@@ -1274,6 +1335,8 @@ def main() -> int:
         ("AC-DP-17", rust_worker_python_frame_uses_same_debugpy_thread),
         ("AC-DP-18", selected_rust_frame_step_returns_to_codelldb),
         ("AC-DP-19", selected_python_frame_step_in_returns_to_codelldb),
+        ("AC-DP-20", selected_python_frame_next_stays_in_debugpy),
+        ("AC-DP-21", selected_python_frame_step_out_stays_in_debugpy),
     )
     results: dict[str, bool] = {}
     for criterion, case in cases:
