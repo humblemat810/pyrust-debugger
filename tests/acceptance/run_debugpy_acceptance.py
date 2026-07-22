@@ -66,6 +66,9 @@ CRITERIA = (
     "AC-DP-19",
     "AC-DP-20",
     "AC-DP-21",
+    "AC-DP-22",
+    "AC-DP-23",
+    "AC-DP-24",
 )
 
 
@@ -1108,7 +1111,88 @@ def rust_worker_python_frame_uses_same_debugpy_thread() -> None:
         client.close()
 
 
-def selected_rust_frame_step_returns_to_codelldb() -> None:
+def rust_worker_selected_rust_frame_steps_on_same_native_thread() -> None:
+    client = DapClient(proxy_command())
+    try:
+        initialize(client)
+        launch = _launch(
+            client,
+            program=RUST_THREADED_BINARY,
+            args=[],
+            env={"LD_LIBRARY_PATH": _python_libdir()},
+        )
+        client.event("initialized", timeout=10)
+        _set_breakpoint(client, RUST_THREADED_SOURCE, 13)
+        client.response(client.send("configurationDone"), timeout=10)
+        client.response(launch, timeout=20)
+
+        rust_stop = client.event("stopped", timeout=30)
+        native_thread = rust_stop.get("body", {}).get("threadId")
+        if not isinstance(native_thread, int):
+            raise DapError(f"Rust worker stop had no native identity: {rust_stop}")
+        routing = next(
+            (
+                frame
+                for frame in _stack(client, native_thread)
+                if frame.get("name") == "python_inner"
+                and (frame.get("source") or {}).get("path")
+                == str(RUST_THREADED_PYTHON_SOURCE)
+            ),
+            None,
+        )
+        if not isinstance(routing, dict):
+            raise DapError("Rust worker stop had no selectable Python frame")
+        client.response(client.send("scopes", {"frameId": routing["id"]}), timeout=10)
+
+        python_stop = client.event("stopped", timeout=30)
+        python_thread = python_stop.get("body", {}).get("threadId")
+        if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
+            raise DapError(f"Rust worker did not transfer to debugpy: {python_stop}")
+        live = _stack(client, python_thread)
+        rust_frame = next(
+            (
+                frame
+                for frame in live
+                if (frame.get("source") or {}).get("path")
+                == str(RUST_THREADED_SOURCE)
+                and "rust_outer::{closure" in str(frame.get("name", ""))
+            ),
+            None,
+        )
+        if not isinstance(rust_frame, dict) or rust_frame.get("line") != 32:
+            raise DapError(f"debugpy worker used the wrong native TID: {live[:8]}")
+        client.response(
+            client.send("scopes", {"frameId": rust_frame["id"]}),
+            timeout=10,
+        )
+        client.response(
+            client.send(
+                "next",
+                {"threadId": python_thread, "granularity": "line"},
+            ),
+            timeout=10,
+        )
+
+        stepped = client.event("stopped", timeout=30)
+        stepped_thread = stepped.get("body", {}).get("threadId")
+        if (
+            stepped.get("body", {}).get("reason") != "step"
+            or stepped_thread != native_thread
+        ):
+            raise DapError(f"Rust worker step changed native identity: {stepped}")
+        top = _stack(client, stepped_thread)[0]
+        if (
+            top.get("line") != 33
+            or (top.get("source") or {}).get("path")
+            != str(RUST_THREADED_SOURCE)
+            or _evaluate(client, top["id"], "1 + 1") != "2"
+        ):
+            raise DapError(f"Rust worker did not perform a live native step: {top}")
+    finally:
+        client.close()
+
+
+def _selected_rust_frame_step(command: str) -> None:
     client = DapClient(proxy_command())
     try:
         initialize(client)
@@ -1143,13 +1227,22 @@ def selected_rust_frame_step_returns_to_codelldb() -> None:
         rust_id = rust_frame.get("id")
         if not isinstance(rust_id, int):
             raise DapError(f"Rust lease frame had no ID: {rust_frame}")
-        client.response(
-            client.send("scopes", {"frameId": rust_id}),
-            timeout=10,
-        )
+        original_line = rust_frame.get("line")
+        original_name = rust_frame.get("name")
+        if command == "stepOut":
+            cleared = client.send(
+                "setBreakpoints",
+                {
+                    "source": {"path": str(EMBEDDED_PYTHON_SOURCE)},
+                    "breakpoints": [],
+                    "sourceModified": False,
+                },
+            )
+            client.response(cleared, timeout=10)
+        client.response(client.send("scopes", {"frameId": rust_id}), timeout=10)
 
         step = client.send(
-            "next",
+            command,
             {"threadId": python_thread, "granularity": "line"},
         )
         client.response(step, timeout=10)
@@ -1164,22 +1257,35 @@ def selected_rust_frame_step_returns_to_codelldb() -> None:
                 f"selected Rust step did not return to CodeLLDB: {rust_stop}"
             )
         live = _stack(client, rust_thread)
-        project_frame = next(
-            (
-                frame
-                for frame in live
-                if (frame.get("source") or {}).get("path")
-                == str(RUST_OUTER_SOURCE)
-            ),
-            None,
-        )
-        live_id = project_frame.get("id") if isinstance(project_frame, dict) else None
+        top = live[0] if live else {}
+        live_id = top.get("id") if isinstance(top, dict) else None
         if not isinstance(live_id, int) or _evaluate(client, live_id, "1 + 1") != "2":
             raise DapError(
-                f"CodeLLDB did not own the returned Rust frame: {project_frame}"
+                f"CodeLLDB did not own the returned Rust frame: {top}"
             )
+        if command in {"next", "stepIn"}:
+            if (
+                top.get("name") != original_name
+                or top.get("line") != 30
+                or top.get("line") == original_line
+            ):
+                raise DapError(f"selected Rust {command} did not advance: {top}")
+        elif any(frame.get("name") == original_name for frame in live):
+            raise DapError(f"selected Rust stepOut retained its frame: {live[:6]}")
     finally:
         client.close()
+
+
+def selected_rust_frame_step_returns_to_codelldb() -> None:
+    _selected_rust_frame_step("next")
+
+
+def selected_rust_frame_step_in_returns_to_codelldb() -> None:
+    _selected_rust_frame_step("stepIn")
+
+
+def selected_rust_frame_step_out_returns_to_codelldb() -> None:
+    _selected_rust_frame_step("stepOut")
 
 
 def selected_python_frame_step_in_returns_to_codelldb() -> None:
@@ -1337,6 +1443,9 @@ def main() -> int:
         ("AC-DP-19", selected_python_frame_step_in_returns_to_codelldb),
         ("AC-DP-20", selected_python_frame_next_stays_in_debugpy),
         ("AC-DP-21", selected_python_frame_step_out_stays_in_debugpy),
+        ("AC-DP-22", selected_rust_frame_step_in_returns_to_codelldb),
+        ("AC-DP-23", selected_rust_frame_step_out_returns_to_codelldb),
+        ("AC-DP-24", rust_worker_selected_rust_frame_steps_on_same_native_thread),
     )
     results: dict[str, bool] = {}
     for criterion, case in cases:

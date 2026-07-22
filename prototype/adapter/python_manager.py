@@ -262,14 +262,53 @@ class PythonProcessManager:
     def native_identity_for_thread(self, thread_id: int) -> tuple[int, int]:
         route = self._require_thread(thread_id)
         session = self._require_session(route.process_id)
-        native_thread_id = next(
-            (
-                native
-                for native, python in session.native_threads.items()
-                if python == route.thread_id
-            ),
-            route.process_id,
-        )
+        with self._lock:
+            native_thread_id = next(
+                (
+                    native
+                    for native, python in session.native_threads.items()
+                    if python == route.thread_id
+                ),
+                None,
+            )
+        if native_thread_id is None:
+            stack = session.transport.request(
+                "stackTrace",
+                {"threadId": route.thread_id, "startFrame": 0, "levels": 1},
+            )
+            frames = (stack.get("body") or {}).get("stackFrames")
+            frame_id = (
+                frames[0].get("id")
+                if isinstance(frames, list)
+                and frames
+                and isinstance(frames[0], dict)
+                else None
+            )
+            if not isinstance(frame_id, int):
+                raise PythonTransportError(
+                    "debugpy cannot resolve the selected thread's native ID"
+                )
+            evaluated = session.transport.request(
+                "evaluate",
+                {
+                    "expression": "__import__('_thread').get_native_id()",
+                    "frameId": frame_id,
+                    "context": "watch",
+                },
+            )
+            result = (evaluated.get("body") or {}).get("result")
+            try:
+                native_thread_id = int(str(result).strip())
+            except (TypeError, ValueError) as error:
+                raise PythonTransportError(
+                    "debugpy returned an invalid native thread ID"
+                ) from error
+            if native_thread_id <= 0:
+                raise PythonTransportError(
+                    "debugpy returned an invalid native thread ID"
+                )
+            with self._lock:
+                session.native_threads[native_thread_id] = route.thread_id
         return route.process_id, native_thread_id
 
     def is_handoff_exposed(self, thread_id: object) -> bool:

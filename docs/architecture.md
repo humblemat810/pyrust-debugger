@@ -121,6 +121,9 @@ cache invalidation complexity.
 - `next` and `stepOut` from a transferred Python frame: install a temporary
   debugpy breakpoint at the selected source-backed destination, suppress
   helper stops, then restore the user's breakpoint set
+- stepping a selected Rust lease frame: return to its saved instruction on the
+  resolved native TID, restore user instruction breakpoints, then forward the
+  original `next`, `stepIn`, or `stepOut` to CodeLLDB
 
 The coordinator's frame routing table is explicit:
 
@@ -137,6 +140,12 @@ CodeLLDB Rust frame. `next` and `stepOut` use a temporary debugpy breakpoint
 to land on a source-backed next statement in the selected frame or immediate
 Python caller. If that destination is ambiguous or unavailable, PyRust rejects
 the operation rather than exposing the injected handoff frame.
+
+Threads created after debugpy startup are mapped lazily. At a real Python stop,
+PyRust evaluates `_thread.get_native_id()` in the selected debugpy frame and
+caches that debugpy-thread-to-OS-TID mapping before asking CodeLLDB to pause,
+inspect, or step the native thread. The process leader is never used as a
+fallback for an unknown worker TID.
 
 The built-in VS Code Call Stack is authoritative for frame selection. A custom
 Process Tree can navigate source and display ownership, but it cannot set

@@ -227,7 +227,7 @@ def rp_source_navigation() -> None:
         assert_source(frame_by_name(frames, "rust_outer"), RUST_SOURCE, 17)
         assert_source(frame_by_name(frames, "main"), RUST_SOURCE, 36)
         assert_source(frame_by_name(frames, "python_inner"), PYTHON_SOURCE, 4)
-        assert_source(frame_by_name(frames, "python_outer"), PYTHON_SOURCE, 9)
+        assert_source(frame_by_name(frames, "python_outer"), PYTHON_SOURCE, 11)
     finally:
         result["client"].close()
 

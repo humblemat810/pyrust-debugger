@@ -67,6 +67,14 @@ class _NativeLeaseFrame:
     frame_id: int | None = None
 
 
+@dataclass(frozen=True)
+class _NativeLeaseStep:
+    process_id: int
+    thread_id: int
+    command: str
+    arguments: dict[str, Any]
+
+
 class MixedStackHooks(ProxyHooks):
     """Merge one CPython stack into either supported fixture stack."""
 
@@ -91,7 +99,7 @@ class MixedStackHooks(ProxyHooks):
         self._function_breakpoints: list[dict[str, Any]] = []
         self._temporary_native_step_target: str | None = None
         self._instruction_breakpoints: list[dict[str, Any]] = []
-        self._temporary_native_return_process: int | None = None
+        self._pending_native_step: _NativeLeaseStep | None = None
         self._python_handoffs: set[tuple[int, int]] = set()
         self._python_step_in_processes: set[int] = set()
         self._python_step_in_suppress_python: set[int] = set()
@@ -165,7 +173,7 @@ class MixedStackHooks(ProxyHooks):
             self._restart_arguments = None
             self._temporary_native_step_target = None
             self._instruction_breakpoints.clear()
-            self._temporary_native_return_process = None
+            self._pending_native_step = None
             self._python_handoffs.clear()
             self._python_step_in_processes.clear()
             self._python_step_in_suppress_python.clear()
@@ -256,16 +264,21 @@ class MixedStackHooks(ProxyHooks):
         process_id = (event.get("body") or {}).get("systemProcessId")
         if not isinstance(process_id, int) and isinstance(thread_id, int):
             process_id = context.state.process_id_for_thread(thread_id)
-        native_return = self._restore_instruction_breakpoints(
+        native_step = self._restore_instruction_breakpoints(
             process_id if isinstance(process_id, int) else None,
             context,
         )
-        if native_return:
-            event = deepcopy(event)
-            body = dict(event.get("body") or {})
-            body["reason"] = "step"
-            body["description"] = "Returned to the selected Rust frame"
-            event["body"] = body
+        if native_step is not None:
+            try:
+                self._continue_native_lease_step(native_step, context)
+            except (ChildTransportError, TimeoutError) as error:
+                event = deepcopy(event)
+                body = dict(event.get("body") or {})
+                body["reason"] = "pause"
+                body["description"] = f"Rust step failed: {error}"
+                event["body"] = body
+            else:
+                return None
         if isinstance(process_id, int):
             with self._lock:
                 maintenance = self._native_maintenance.get(process_id)
@@ -546,7 +559,7 @@ class MixedStackHooks(ProxyHooks):
                 if isinstance(breakpoints, list)
                 else []
             )
-            self._temporary_native_return_process = None
+            self._pending_native_step = None
         return None
 
     def on_pause_request(
@@ -1096,7 +1109,15 @@ class MixedStackHooks(ProxyHooks):
                         thread_id,
                         context,
                     )
-                except (ChildTransportError, PythonTransportError, TimeoutError):
+                except (
+                    ChildTransportError,
+                    PythonTransportError,
+                    TimeoutError,
+                ) as error:
+                    context.send_output(
+                        f"PyRust could not capture live Rust frames: {error}\n",
+                        category="stderr",
+                    )
                     native_frames = []
                 if native_frames:
                     merged = [*frames, *native_frames]
@@ -2213,8 +2234,19 @@ class MixedStackHooks(ProxyHooks):
                         )
                     ),
                 )
+            command = str(request.get("command"))
+            arguments = {
+                key: value
+                for key, value in dict(request.get("arguments") or {}).items()
+                if key in {"granularity", "singleThread", "targetId"}
+            }
             with self._lock:
-                self._temporary_native_return_process = route.process_id
+                self._pending_native_step = _NativeLeaseStep(
+                    process_id=route.process_id,
+                    thread_id=route.native_thread_id,
+                    command=command,
+                    arguments=arguments,
+                )
             self._release_native_lease(route.process_id, context)
             resumed = python_manager.continue_thread(
                 route.python_thread_id,
@@ -2229,23 +2261,23 @@ class MixedStackHooks(ProxyHooks):
         self,
         process_id: int | None,
         context: ProxyContext,
-    ) -> bool:
+    ) -> _NativeLeaseStep | None:
         with self._lock:
-            temporary_process = self._temporary_native_return_process
+            pending = self._pending_native_step
             if (
-                temporary_process is None
-                or process_id != temporary_process
+                pending is None
+                or process_id != pending.process_id
             ):
-                return False
-            self._temporary_native_return_process = None
+                return None
+            self._pending_native_step = None
             breakpoints = [
                 dict(item) for item in self._instruction_breakpoints
             ]
         try:
             manager = self._process_manager
-            if manager is not None and manager.owns_process(temporary_process):
+            if manager is not None and manager.owns_process(pending.process_id):
                 manager.set_instruction_breakpoints(
-                    temporary_process,
+                    pending.process_id,
                     breakpoints,
                 )
             else:
@@ -2256,7 +2288,35 @@ class MixedStackHooks(ProxyHooks):
                 )
         except Exception:
             pass
-        return True
+        return pending
+
+    def _continue_native_lease_step(
+        self,
+        step: _NativeLeaseStep,
+        context: ProxyContext,
+    ) -> None:
+        try:
+            manager = self._process_manager
+            if manager is not None and manager.owns_thread(step.thread_id):
+                response = manager.step_thread(
+                    step.command,
+                    step.thread_id,
+                    step.arguments,
+                )
+            else:
+                response = context.request_downstream(
+                    step.command,
+                    {**step.arguments, "threadId": step.thread_id},
+                    timeout=10,
+                )
+        except Exception as error:
+            raise ChildTransportError(
+                f"CodeLLDB {step.command} request failed: {error}"
+            ) from error
+        if response.get("success") is not True:
+            raise ChildTransportError(
+                str(response.get("message", f"CodeLLDB {step.command} failed"))
+            )
 
     def _prepare_native_step_target(
         self,

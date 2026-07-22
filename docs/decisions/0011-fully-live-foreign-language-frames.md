@@ -87,10 +87,11 @@ layout, or a post-call Python line.
 
 When the refreshed Python frame is physically suspended inside the Rust call,
 `stepIn` resumes the debugpy helper and exposes CodeLLDB's reacquired Rust
-breakpoint as one step stop. Late helper stops are suppressed. `next` and
-`stepOut` at this boundary are rejected instead of exposing helper frames;
-implementing them requires a coordinated native-breakpoint suppression plus a
-debugpy run-to-line target.
+breakpoint as one step stop. Late helper stops are suppressed. Python `next`
+and `stepOut` use a temporary debugpy source breakpoint. A selected live Rust
+lease frame first returns to its exact instruction and native TID, then PyRust
+forwards the requested `next`, `stepIn`, or `stepOut` to CodeLLDB and exposes
+only the resulting native step stop.
 
 ## Non-Goals
 
@@ -115,13 +116,14 @@ The slice is complete only when automated and manual tests prove:
 7. Thread, process, async, restart, and cross-language breakpoint handoff
    acceptance remain green.
 
-Automated evidence is `AC-DP-11` through `AC-DP-21`:
+Automated evidence is `AC-DP-11` through `AC-DP-24`:
 
 - direct and child-process Rust-stop to live-debugpy transfers;
 - a prior Python breakpoint followed by Python -> Rust -> Python ownership;
 - dynamically selected native callables with no Rust-like function name;
-- Python-created worker threads; and
+- Python-created worker threads;
 - Rust-created worker threads in an embedded interpreter;
-- selected Rust-frame stepping back to CodeLLDB; and
-- selected Python-frame `stepIn` back to the current CodeLLDB Rust frame; and
-- selected Python-frame `next` and `stepOut` while suspended inside Rust.
+- selected Python-frame `stepIn` back to the current CodeLLDB Rust frame;
+- selected Python-frame `next` and `stepOut` while suspended inside Rust;
+- selected Rust-frame `next`, `stepIn`, and `stepOut` through CodeLLDB; and
+- lazy debugpy-to-native TID resolution for a Rust-created worker thread.

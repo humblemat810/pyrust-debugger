@@ -105,6 +105,15 @@ class FakeDebugpyTransport:
                 },
             }
         if command == "evaluate":
+            if arguments.get("expression") == "__import__('_thread').get_native_id()":
+                return {
+                    "success": True,
+                    "body": {
+                        "result": "1701",
+                        "type": "int",
+                        "variablesReference": 0,
+                    },
+                }
             return {
                 "success": True,
                 "body": {
@@ -268,6 +277,21 @@ class PythonProcessManagerTests(unittest.TestCase):
                         "line": 24,
                     }
                 ],
+            )
+            self.assertEqual(
+                manager.native_identity_for_thread(virtual_thread_id),
+                (700, 1701),
+            )
+            self.assertEqual(
+                created[0].calls[-1],
+                (
+                    "evaluate",
+                    {
+                        "expression": "__import__('_thread').get_native_id()",
+                        "frameId": 11,
+                        "context": "watch",
+                    },
+                ),
             )
             self.assertEqual(
                 manager.scopes(frame_id)["body"]["scopes"][0]["name"],

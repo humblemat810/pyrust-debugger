@@ -5,7 +5,7 @@ from unittest.mock import patch
 from threading import Event, Lock, Thread
 import time
 
-from prototype.adapter.mixed_stack import MixedStackHooks
+from prototype.adapter.mixed_stack import MixedStackHooks, _NativeLeaseStep
 from prototype.adapter.proxy import ProxyContext
 from prototype.adapter.state import ProxySessionState
 from prototype.python.pyrust_stack import (
@@ -21,6 +21,7 @@ class _ContextProxy:
         self.native_frames = native_frames
         self.outputs: list[str] = []
         self.stack_arguments: list[dict[str, object]] = []
+        self.downstream_requests: list[tuple[str, dict[str, object]]] = []
 
     def request_downstream(
         self,
@@ -40,6 +41,7 @@ class _ContextProxy:
                 },
             }
         assert arguments is not None
+        self.downstream_requests.append((command, dict(arguments)))
         self.stack_arguments.append(dict(arguments))
         return {
             "success": True,
@@ -128,6 +130,30 @@ class MixedStackHooksTests(unittest.TestCase):
             [thread["name"] for thread in process["threads"]],
             ["rust-child-A", "rust-child-B"],
         )
+
+    def test_native_lease_step_forwards_the_selected_operation(self) -> None:
+        for command in ("next", "stepIn", "stepOut"):
+            with self.subTest(command=command):
+                self.hooks._continue_native_lease_step(
+                    _NativeLeaseStep(
+                        process_id=100,
+                        thread_id=77,
+                        command=command,
+                        arguments={"granularity": "line", "singleThread": True},
+                    ),
+                    self.context,
+                )
+                self.assertEqual(
+                    self.proxy.downstream_requests[-1],
+                    (
+                        command,
+                        {
+                            "granularity": "line",
+                            "singleThread": True,
+                            "threadId": 77,
+                        },
+                    ),
+                )
 
     def test_python_outer_golden_merge_preserves_native_frames(self) -> None:
         stacks = (

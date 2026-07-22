@@ -145,6 +145,13 @@ reports an explicit error instead of exposing its injected helper frame. With
 `pyrustPythonDebug: false`, the legacy snapshot path remains limited to
 primitive locals and the safe expression subset.
 
+Selecting a live Rust lease frame at a Python-owned stop routes `next`,
+`stepIn`, and `stepOut` through CodeLLDB. PyRust first returns to the selected
+instruction on its resolved OS thread, then exposes CodeLLDB's actual native
+step result. Threads created after debugpy startup resolve their native TID
+from the selected live Python frame instead of falling back to the process
+leader.
+
 This remains an execution-ownership boundary, not simultaneous control by both
 debuggers. PyRust performs an explicit ownership transfer before querying the
 foreign-language engine.
