@@ -1,0 +1,8 @@
+.git
+.agents
+.codex
+.tools/
+.venv/
+node_modules/
+vscode-extension/node_modules/
+target/
