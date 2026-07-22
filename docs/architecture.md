@@ -253,10 +253,21 @@ declared `Py_MOD_PER_INTERPRETER_GIL_SUPPORTED`. The secondary-interpreter
 Python caller and primitive locals are merged above the Rust leaf.
 
 The process-wide debugpy 1.8.20 server does not safely provide a live frame in
-that secondary interpreter. PyRust checks the owning interpreter ID before
-queuing the debugpy rendezvous and rejects non-main-interpreter handoff without
-releasing CodeLLDB. This preserves execution ownership and avoids the target
-abort observed when debugpy was imported inside the secondary interpreter.
+that secondary interpreter. PyRust therefore does not queue the debugpy
+rendezvous there. It uses CPython 3.14 targeted remote execution to enter a
+synchronous service on the exact selected interpreter and native thread. The
+service holds direct frame objects and answers scopes, variables, evaluation,
+imports, assignment, and Python stepping over an atomic file protocol. It
+starts no helper thread in the target and yields execution only for an
+explicit continue or step.
+
+The hidden CodeLLDB continuation ends the original stop epoch, so the
+coordinator emits one refreshed Python-owned stop with new virtual frame and
+variable IDs. `next`, Python-to-Python `stepIn`, and `stepOut` use
+interpreter-local tracing and return on the same OS thread. This avoids the
+target abort observed when debugpy was imported inside the secondary
+interpreter. Source breakpoints in a secondary interpreter remain outside the
+current backend; entry begins from a native stop.
 
 ### Python -> Rust expected shape
 
@@ -342,7 +353,7 @@ Initial settings:
    for the fixed CPython 3.14.6 Linux fixtures by ADR 0005.
 6. Live two-engine frame ownership and stepping. Implemented for the supported
    CPython 3.14.6 / PyO3 Linux topology by ADR 0011.
-7. Interpreter-aware stack and snapshot selection. Implemented with
-   fail-closed live-debugpy behavior for secondary interpreters.
-8. Broader non-PyO3 bridge classification, live secondary-interpreter Python
-   debugging, free-threaded CPython, and suspended async graph presentation.
+7. Interpreter-aware stack and live selected-frame ownership. Implemented
+   with an interpreter-local backend for secondary interpreters.
+8. Broader non-PyO3 bridge classification, secondary-interpreter source
+   breakpoints, free-threaded CPython, and suspended async graph presentation.

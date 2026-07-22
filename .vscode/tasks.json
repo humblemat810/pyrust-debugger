@@ -55,6 +55,28 @@
       "dependsOrder": "sequence"
     },
     {
+      "label": "PyRust: Build Subinterpreter",
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "build",
+        "--locked",
+        "--manifest-path",
+        "${workspaceFolder}/research/fixtures/subinterpreter_outer/Cargo.toml"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "PYO3_PYTHON": "${workspaceFolder}/.venv/bin/python"
+        }
+      },
+      "problemMatcher": [
+        "$rustc"
+      ],
+      "dependsOn": "PyRust: Ensure Debugger Extension",
+      "dependsOrder": "sequence"
+    },
+    {
       "label": "PyRust: Build Rust Threads",
       "type": "process",
       "command": "cargo",

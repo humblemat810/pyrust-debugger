@@ -81,9 +81,9 @@ commands to debugpy. Foreign frames use reversible engine leases.
 ADR 0011 implements the product invariant: every displayed frame uses its real
 language debugger when selected, independent of which engine caused the stop.
 debugpy is enabled by default; disabling it explicitly selects legacy
-snapshot diagnostics. The invariant is currently main-interpreter-only for
-Python frames: secondary-interpreter stacks and snapshots are selected
-correctly, but debugpy handoff fails closed.
+snapshot diagnostics. Main-interpreter Python frames use debugpy.
+Secondary-interpreter frames reached from a native stop use a synchronous,
+interpreter-local live engine because debugpy itself is not safe there.
 
 ADR 0006 implements the first process-tree coordinator. Two-worker
 Python-thread and Rust-thread fixtures pass. Python-parent and Rust-parent

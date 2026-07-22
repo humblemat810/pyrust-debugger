@@ -117,11 +117,15 @@ interpreters, PyRust selects the interpreter whose active frame matches the
 requested function and source path. Stack display and bounded snapshots are
 proven for a subinterpreter-safe Rust extension.
 
-debugpy 1.8.20 is not subinterpreter-safe in this environment. Live Python
-handoff is therefore main-interpreter-only; selecting a subinterpreter Python
-frame with debugpy enabled returns an explicit error and leaves CodeLLDB
-stopped. Free-threaded CPython and suspended async task/future graphs remain
-outside the proven scope. See
+debugpy 1.8.20 is not subinterpreter-safe in this environment, so PyRust does
+not import it into a secondary interpreter. Instead, selecting a recovered
+secondary-interpreter frame transfers the selected native thread to a
+synchronous interpreter-local engine. That engine provides live scopes,
+object values, arbitrary evaluation and imports, assignment, `next`,
+Python-to-Python `stepIn`, `stepOut`, and continue without starting daemon
+threads. Python source breakpoints inside a secondary interpreter are not yet
+provided; the live lease begins from a native stop. Free-threaded CPython and
+suspended async task/future graphs remain outside the proven scope. See
 [the documentation index](docs/README.md).
 
 ## Full Python Debugging

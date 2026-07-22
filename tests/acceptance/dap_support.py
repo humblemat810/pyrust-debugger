@@ -13,6 +13,7 @@ from pathlib import Path
 import queue
 import select
 import shlex
+import signal
 import subprocess
 import time
 from typing import Any, Iterable
@@ -87,6 +88,7 @@ class DapClient:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=True,
         )
         assert self.process.stdin and self.process.stdout and self.process.stderr
         self.stdin = self.process.stdin
@@ -191,6 +193,35 @@ class DapClient:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=3)
+        self._terminate_process_group()
+        for stream in (self.stdin, self.stdout, self.stderr):
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+    def _terminate_process_group(self) -> None:
+        """Reap debugger descendants before the next black-box session."""
+
+        if not hasattr(os, "killpg"):
+            return
+        try:
+            os.killpg(self.process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            return
+        deadline = time.monotonic() + 0.25
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(self.process.pid, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.01)
+        try:
+            os.killpg(self.process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def proxy_command() -> list[str]:

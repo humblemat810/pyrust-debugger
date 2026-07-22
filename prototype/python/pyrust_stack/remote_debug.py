@@ -142,3 +142,32 @@ def queue_remote_debug_script(
     breaker_address = thread_state + offsets.thread_eval_breaker
     breaker = struct.unpack("<Q", memory.read(breaker_address, 8))[0]
     writer.write(breaker_address, struct.pack("<Q", breaker | (1 << 5)))
+
+
+def selected_python_interpreter_id(
+    pid: int,
+    native_thread_id: int,
+    *,
+    expected_name: str,
+    expected_path: str,
+) -> int:
+    """Return the CPython interpreter ID that owns one selected live frame."""
+
+    if sys.platform != "linux" or sys.maxsize <= 2**32:
+        raise RemoteDebugError("targeted remote debugging requires 64-bit Linux")
+    if sys.version_info[:2] != (3, 14):
+        raise RemoteDebugError("targeted remote debugging requires CPython 3.14")
+    try:
+        memory = _RemoteMemory(pid)
+        offsets = _read_debug_offsets(memory, pid)
+        interpreter, _thread_state = _find_thread_state(
+            memory,
+            offsets,
+            _runtime_address(pid),
+            native_thread_id,
+            expected_name=expected_name,
+            expected_path=expected_path,
+        )
+        return memory.signed_size(interpreter + offsets.interpreter_id)
+    except LocalReadError as error:
+        raise RemoteDebugError(str(error)) from error

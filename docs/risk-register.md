@@ -12,7 +12,7 @@
 | R8 | Process-memory permissions fail in containers | High | Medium | Detect errno, document `SYS_PTRACE`, native fallback | Phase 4 |
 | R9 | Dynamic Rust extension symbols do not bind | Medium | High | Debug profile, pending breakpoints, module-load tests | Phase 1 |
 | R10 | Helper latency makes stack UI feel broken | Medium | Medium | Cache per stop, persistent helper if measured necessary | Phase 4 |
-| R11 | Multiple interpreters make thread/frame ownership ambiguous | Low | High | Traverse all interpreter/thread-state lists; require one frame-identity match; reject secondary-interpreter debugpy handoff | AC-DP-29 |
+| R11 | Multiple interpreters make thread/frame ownership ambiguous | Low | High | Traverse all interpreter/thread-state lists; require one frame-identity match; route secondary frames to the threadless interpreter-local engine | AC-DP-29 |
 | R12 | Free-threaded CPython behaves differently | Medium | High | Explicitly detect and reject until tested | Release |
 | R13 | Two-adapter expansion deadlocks or double-continues | High | Critical | Separate future project; one execution owner in alpha | Future |
 | R14 | Licensing contamination from studied GPL prior art | Low | High | Independent implementation; no copied code; retain source notes | Ongoing |

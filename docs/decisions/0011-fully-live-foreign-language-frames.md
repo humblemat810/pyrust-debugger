@@ -133,20 +133,28 @@ Automated evidence is `AC-DP-11` through `AC-DP-29`:
 - structural PyO3/CPython boundary discovery with application function names
   unrelated to the original fixtures; and
 - exact interpreter/thread-state selection when one native TID appears in
-  multiple CPython interpreters, with fail-closed debugpy behavior.
+  multiple CPython interpreters; and
+- interpreter-local live scopes, evaluation, imports, assignment, `next`,
+  Python-to-Python `stepIn`, `stepOut`, and continue for a secondary
+  interpreter reached from a Rust stop.
 
 The last criterion proves that routing does not depend on names such as
 `rust_inner`, `rust_outer`, `rust_callback`, `python_inner`, or
-`python_outer`. `AC-DP-29` proves mixed-stack and snapshot ownership in a
-secondary interpreter, but not live debugpy evaluation there. It does not
-prove arbitrary non-PyO3 FFI bridges or free-threaded CPython.
+`python_outer`. `AC-DP-29` proves mixed-stack ownership and a live
+interpreter-local Python lease in a secondary interpreter. It does not prove
+arbitrary non-PyO3 FFI bridges or free-threaded CPython.
 
 ### Secondary Interpreter Boundary
 
-The fully-live invariant remains main-interpreter-only with debugpy 1.8.20.
 Importing debugpy in the tested secondary interpreter aborted the target, so
-PyRust must not attempt that transfer. Before injecting the debugpy rendezvous,
-the coordinator now resolves the selected native TID across every bounded
-interpreter/thread-state list and verifies that the owning interpreter ID is
-the main interpreter. A secondary-interpreter request fails while CodeLLDB
-retains the stop.
+PyRust must not attempt that transfer. The coordinator resolves the selected
+native TID across every bounded interpreter/thread-state list. Main-interpreter
+frames use debugpy. Secondary-interpreter frames use a synchronous,
+threadless service entered through CPython 3.14 remote execution. The service
+holds the selected live frame and provides real Python operations until a
+continue or step relinquishes the lease.
+
+The secondary backend currently begins from a native stop and does not install
+Python source breakpoints. It supports Python-to-Python stepping; crossing from
+that backend into a new native call requires a future native breakpoint
+transaction.

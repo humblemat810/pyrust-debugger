@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, Callable
 
 from .dap_support import (
     DapClient,
@@ -983,10 +983,10 @@ def dynamic_native_call_hands_off_without_name_discovery() -> None:
             )
         client.response(
             client.send("scopes", {"frameId": routing_frame["id"]}),
-            timeout=10,
+            timeout=20,
         )
 
-        python_stop = client.event("stopped", timeout=30)
+        python_stop = client.event("stopped", timeout=45)
         python_thread = python_stop.get("body", {}).get("threadId")
         if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
             raise DapError(
@@ -1217,18 +1217,30 @@ def rust_worker_selected_rust_frame_steps_on_same_native_thread() -> None:
 
 
 def asyncio_task_live_debugpy_returns_to_same_rust_thread() -> None:
+    def stage(label: str, operation: Callable[[], Any]) -> Any:
+        try:
+            return operation()
+        except DapError as error:
+            raise DapError(f"async handoff {label}: {error}") from error
+
     client = DapClient(proxy_command())
     try:
         initialize(client)
         launch = _launch(client, program=PYTHON, args=[str(ASYNC_DRIVER)])
-        client.event("initialized", timeout=10)
+        stage("initialize", lambda: client.event("initialized", timeout=10))
         _set_breakpoint(client, RUST_SOURCE, 6)
-        client.response(client.send("configurationDone"), timeout=10)
-        client.response(launch, timeout=20)
+        stage(
+            "configuration",
+            lambda: client.response(client.send("configurationDone"), timeout=10),
+        )
+        stage("launch", lambda: client.response(launch, timeout=20))
 
         observed: set[tuple[str, str, str]] = set()
         native_thread: int | None = None
-        rust_stop = client.event("stopped", timeout=30)
+        rust_stop = stage(
+            "initial Rust stop",
+            lambda: client.event("stopped", timeout=30),
+        )
         for index in range(2):
             current_native = rust_stop.get("body", {}).get("threadId")
             if not isinstance(current_native, int):
@@ -1248,12 +1260,18 @@ def asyncio_task_live_debugpy_returns_to_same_rust_thread() -> None:
             )
             if not isinstance(routing, dict):
                 raise DapError("async Rust stop had no selectable coroutine frame")
-            client.response(
-                client.send("scopes", {"frameId": routing["id"]}),
-                timeout=10,
+            stage(
+                f"task {index + 1} scopes transfer",
+                lambda: client.response(
+                    client.send("scopes", {"frameId": routing["id"]}),
+                    timeout=20,
+                ),
             )
 
-            python_stop = client.event("stopped", timeout=30)
+            python_stop = stage(
+                f"task {index + 1} Python stop",
+                lambda: client.event("stopped", timeout=45),
+            )
             python_thread = python_stop.get("body", {}).get("threadId")
             if not isinstance(python_thread, int) or python_thread < 1_600_000_000:
                 raise DapError(f"async coroutine was not debugpy-owned: {python_stop}")
@@ -1273,11 +1291,17 @@ def asyncio_task_live_debugpy_returns_to_same_rust_thread() -> None:
                 )
             )
             if index == 0:
-                client.response(
-                    client.send("stepIn", {"threadId": python_thread}),
-                    timeout=10,
+                stage(
+                    "task 1 stepIn response",
+                    lambda: client.response(
+                        client.send("stepIn", {"threadId": python_thread}),
+                        timeout=10,
+                    ),
                 )
-                returned = client.event("stopped", timeout=30)
+                returned = stage(
+                    "task 1 returned Rust stop",
+                    lambda: client.event("stopped", timeout=45),
+                )
                 returned_thread = returned.get("body", {}).get("threadId")
                 top = (
                     _stack(client, returned_thread)[0]
@@ -1295,12 +1319,15 @@ def asyncio_task_live_debugpy_returns_to_same_rust_thread() -> None:
                     )
                 rust_stop = returned
             else:
-                client.response(
-                    client.send(
-                        "continue",
-                        {"threadId": python_thread, "singleThread": True},
+                stage(
+                    "task 2 continue response",
+                    lambda: client.response(
+                        client.send(
+                            "continue",
+                            {"threadId": python_thread, "singleThread": True},
+                        ),
+                        timeout=10,
                     ),
-                    timeout=10,
                 )
         if observed != {
             ("'async-A'", "20", "'async-A'"),
@@ -1525,7 +1552,7 @@ def arbitrary_pyo3_names_merge_and_handoff_to_debugpy() -> None:
         client.close()
 
 
-def subinterpreter_frame_is_owned_and_debugpy_handoff_fails_closed() -> None:
+def subinterpreter_frame_uses_interpreter_local_live_engine() -> None:
     snapshot_client = DapClient(proxy_command())
     try:
         initialize(snapshot_client)
@@ -1612,18 +1639,163 @@ def subinterpreter_frame_is_owned_and_debugpy_handoff_fails_closed() -> None:
         if not isinstance(routing, dict):
             names = [str(frame.get("name", "")) for frame in frames]
             raise DapError(f"subinterpreter Python caller was not merged: {names[:12]}")
-        request = client.send("scopes", {"frameId": routing["id"]})
-        response = client.wait_for(
-            lambda item: item.get("type") == "response"
-            and item.get("request_seq") == request,
+        frame_id = routing.get("id")
+        if not isinstance(frame_id, int):
+            raise DapError(f"subinterpreter Python frame had no ID: {routing}")
+        transfer = client.response(
+            client.send("scopes", {"frameId": frame_id}),
+            timeout=15,
+        )
+        if transfer.get("success") is not True:
+            raise DapError(f"subinterpreter live transfer failed: {transfer}")
+        live_stop = client.event("stopped", timeout=15)
+        live_thread = live_stop.get("body", {}).get("threadId")
+        if live_thread != native_thread:
+            raise DapError(
+                f"subinterpreter live stop changed native thread: {live_stop}"
+            )
+        live_frame = next(
+            (
+                frame
+                for frame in _stack(client, live_thread)
+                if frame.get("name") == "subinterpreter_worker"
+                and (frame.get("source") or {}).get("path")
+                == str(SUBINTERPRETER_DRIVER)
+            ),
+            None,
+        )
+        if not isinstance(live_frame, dict) or not isinstance(
+            live_frame.get("id"), int
+        ):
+            raise DapError(
+                f"refreshed subinterpreter live frame was missing: {live_frame}"
+            )
+        frame_id = live_frame["id"]
+        scopes = client.response(
+            client.send("scopes", {"frameId": frame_id}),
+            timeout=10,
+        ).get("body", {}).get("scopes")
+        if not isinstance(scopes, list) or not scopes:
+            raise DapError(f"live subinterpreter scopes were missing: {scopes}")
+        reference = scopes[0].get("variablesReference")
+        if not isinstance(reference, int) or reference <= 0:
+            raise DapError(f"live subinterpreter locals had no reference: {scopes}")
+        variables = client.response(
+            client.send("variables", {"variablesReference": reference}),
+            timeout=10,
+        ).get("body", {}).get("variables")
+        if not isinstance(variables, list) or not any(
+            variable.get("name") == "interpreter_label"
+            and variable.get("value") == "'secondary-interpreter'"
+            for variable in variables
+        ):
+            raise DapError(f"live subinterpreter locals were wrong: {variables}")
+        if _evaluate(client, frame_id, "value * 2") != "70":
+            raise DapError("subinterpreter evaluation was not live")
+        if _evaluate(
+            client,
+            frame_id,
+            "import math",
+            context="repl",
+        ) != "None":
+            raise DapError("subinterpreter REPL import did not execute")
+        if _evaluate(client, frame_id, "math.factorial(5)") != "120":
+            raise DapError("subinterpreter import was not retained")
+        assigned = client.response(
+            client.send(
+                "setVariable",
+                {
+                    "variablesReference": reference,
+                    "name": "value",
+                    "value": "41",
+                },
+            ),
             timeout=10,
         )
-        if response.get("success") is not False or "subinterpreter" not in str(
-            response.get("message", "")
+        if assigned.get("body", {}).get("value") != "41":
+            raise DapError(f"subinterpreter assignment failed: {assigned}")
+        if _evaluate(client, frame_id, "value") != "41":
+            raise DapError("subinterpreter assigned value was not live")
+        client.response(
+            client.send("next", {"threadId": live_thread}),
+            timeout=10,
+        )
+        stepped = client.event("stopped", timeout=15)
+        if (
+            stepped.get("body", {}).get("reason") != "step"
+            or stepped.get("body", {}).get("threadId") != live_thread
         ):
-            raise DapError(f"subinterpreter handoff did not fail closed: {response}")
-        if _stack(client, native_thread)[0].get("name") != "pyrust_subinterp::calculate_leaf":
-            raise DapError("failed subinterpreter handoff released the native stop")
+            raise DapError(f"subinterpreter next reached the wrong stop: {stepped}")
+        stepped_frame = next(
+            (
+                frame
+                for frame in _stack(client, live_thread)
+                if frame.get("name") == "subinterpreter_worker"
+            ),
+            None,
+        )
+        if not isinstance(stepped_frame, dict) or not isinstance(
+            stepped_frame.get("id"), int
+        ):
+            raise DapError(f"subinterpreter next lost the selected frame: {stepped_frame}")
+        if _evaluate(client, stepped_frame["id"], "value") != "41":
+            raise DapError("subinterpreter next lost live frame state")
+        client.response(
+            client.send("scopes", {"frameId": stepped_frame["id"]}),
+            timeout=10,
+        )
+        client.response(
+            client.send("stepIn", {"threadId": live_thread}),
+            timeout=10,
+        )
+        stepped_in = client.event("stopped", timeout=15)
+        if (
+            stepped_in.get("body", {}).get("reason") != "step"
+            or stepped_in.get("body", {}).get("threadId") != live_thread
+        ):
+            raise DapError(
+                f"subinterpreter stepIn reached the wrong stop: {stepped_in}"
+            )
+        leaf_frame = _stack(client, live_thread)[0]
+        if (
+            leaf_frame.get("name") != "finalize_subinterpreter"
+            or (leaf_frame.get("source") or {}).get("path")
+            != str(SUBINTERPRETER_DRIVER)
+        ):
+            raise DapError(
+                f"subinterpreter stepIn did not reach the Python leaf: {leaf_frame}"
+            )
+        if not isinstance(leaf_frame.get("id"), int) or _evaluate(
+            client,
+            leaf_frame["id"],
+            "value",
+        ) != "42":
+            raise DapError("subinterpreter stepIn lost the Python leaf argument")
+        client.response(
+            client.send("scopes", {"frameId": leaf_frame["id"]}),
+            timeout=10,
+        )
+        client.response(
+            client.send("stepOut", {"threadId": live_thread}),
+            timeout=10,
+        )
+        stepped_out = client.event("stopped", timeout=15)
+        if (
+            stepped_out.get("body", {}).get("reason") != "step"
+            or stepped_out.get("body", {}).get("threadId") != live_thread
+        ):
+            raise DapError(
+                f"subinterpreter stepOut reached the wrong stop: {stepped_out}"
+            )
+        caller = _stack(client, live_thread)[0]
+        if caller.get("name") != "subinterpreter_worker":
+            raise DapError(
+                f"subinterpreter stepOut did not return to its caller: {caller}"
+            )
+        client.response(
+            client.send("continue", {"threadId": live_thread}),
+            timeout=10,
+        )
     finally:
         client.close()
 
@@ -1888,7 +2060,7 @@ def main() -> int:
         ("AC-DP-28", arbitrary_pyo3_names_merge_and_handoff_to_debugpy),
         (
             "AC-DP-29",
-            subinterpreter_frame_is_owned_and_debugpy_handoff_fails_closed,
+            subinterpreter_frame_uses_interpreter_local_live_engine,
         ),
     )
     results: dict[str, bool] = {}

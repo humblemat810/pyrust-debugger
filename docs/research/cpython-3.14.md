@@ -136,8 +136,10 @@ The private `RemoteUnwinder` result shape does not expose interpreter identity.
 The implemented memory reader compensates by traversing CPython's exported
 interpreter/thread-state offsets and matching the selected function and source
 path when one native TID has multiple states. Stack display and snapshots are
-proven for a subinterpreter-safe Rust extension. Live debugpy operations remain
-main-interpreter-only and fail closed for a secondary interpreter.
+proven for a subinterpreter-safe Rust extension. debugpy remains
+main-interpreter-only, while selected secondary-interpreter frames use a
+synchronous interpreter-local live engine entered through the CPython 3.14
+remote-execution protocol.
 
 ## Permissions
 

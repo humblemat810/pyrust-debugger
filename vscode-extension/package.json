@@ -208,6 +208,25 @@
           {
             "type": "pyrust",
             "request": "launch",
+            "name": "PyRust: Python Subinterpreter (live)",
+            "program": "${workspaceFolder}/.venv/bin/python",
+            "args": [
+              "${workspaceFolder}/tests/acceptance/subinterpreter_fixture_driver.py"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+              "PYRUST_SUBINTERP_LIBRARY": "${env:CARGO_TARGET_DIR}/debug/libpyrust_subinterp.so"
+            },
+            "terminal": "console",
+            "consoleMode": "evaluate",
+            "sourceLanguages": [
+              "rust"
+            ],
+            "pyrustPythonDebug": true
+          },
+          {
+            "type": "pyrust",
+            "request": "launch",
             "name": "PyRust: Python Async",
             "program": "${workspaceFolder}/.venv/bin/python",
             "args": [

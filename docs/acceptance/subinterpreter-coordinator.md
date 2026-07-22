@@ -25,23 +25,42 @@ value = 35
 4. The memory reader chooses the thread state whose active frame matches that
    function and source path, rather than the parked same-TID state in the main
    interpreter.
-5. Requesting live debugpy scopes returns an explicit subinterpreter error.
-6. CodeLLDB remains stopped at `pyrust_subinterp::calculate_leaf`; the target
-   does not resume, abort, or terminate.
+5. Selecting `subinterpreter_worker` transfers that exact interpreter and
+   native TID to the interpreter-local live engine.
+6. Live scopes expose `interpreter_label` and `value`.
+7. Arbitrary evaluation, a REPL `import`, retained module state, and
+   write-through local assignment succeed.
+8. `next`, Python-to-Python `stepIn`, `stepOut`, and continue remain on the
+   same native TID and preserve live values.
 
 ## Commands
 
 ```bash
 PYTHONPATH=prototype/python .venv/bin/python -m unittest \
   prototype.python.tests.test_locals \
-  prototype.python.tests.test_remote_debug
+  prototype.python.tests.test_remote_debug \
+  prototype.python.tests.test_live_lease
 
 ./scripts/accept-debugpy-slice.sh
 ```
 
-## Deliberate Limitation
+## Manual VS Code Check
+
+1. Build or reinstall the current VSIX.
+2. Select **PyRust: Python Subinterpreter (live)**.
+3. Set a Rust breakpoint at
+   `research/fixtures/subinterpreter_outer/src/lib.rs:48`.
+4. Start debugging. At `calculate_leaf`, select
+   `subinterpreter_worker` in the mixed stack.
+5. The stack refreshes to a live Python-owned stop. Evaluate `value * 2`,
+   execute `import math`, then evaluate `math.factorial(5)`.
+6. Change local `value` to `41`, then use Step Over, Step Into, and Step Out.
+   The Python leaf is `finalize_subinterpreter`, and every stop remains on the
+   same native thread.
+
+## Backend Boundary
 
 debugpy 1.8.20 is not subinterpreter-safe in the tested CPython 3.14.6
-environment. PyRust supports correct stack and snapshot ownership for the
-active secondary interpreter, but it does not claim live Python evaluation,
-assignment, breakpoints, or stepping there.
+environment. PyRust does not import debugpy there. The interpreter-local engine
+is live but begins from a native stop; it does not yet implement Python source
+breakpoints inside the secondary interpreter.

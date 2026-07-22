@@ -15,9 +15,11 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from threading import Event, Lock, Thread
+import time
 from typing import Any, Mapping
 
 from .child_transport import ChildTransportError
+from .live_lease_manager import LiveLeaseManager, LiveLeaseTransportError
 from .python_manager import PythonProcessManager
 from .python_transport import PythonTransportError
 from .process_manager import ProcessManager
@@ -92,6 +94,7 @@ class MixedStackHooks(ProxyHooks):
         self._in_process_timeout_diagnosed = False
         self._process_manager: ProcessManager | None = None
         self._python_manager: PythonProcessManager | None = None
+        self._live_lease_manager: LiveLeaseManager | None = None
         self._python_debug_registry: TemporaryDirectory[str] | None = None
         self._child_only_process: subprocess.Popen[bytes] | None = None
         self._child_only_mode = False
@@ -195,6 +198,9 @@ class MixedStackHooks(ProxyHooks):
             if self._python_manager is not None:
                 self._python_manager.close()
                 self._python_manager = None
+            if self._live_lease_manager is not None:
+                self._live_lease_manager.close()
+                self._live_lease_manager = None
             if self._python_debug_registry is not None:
                 self._python_debug_registry.cleanup()
                 self._python_debug_registry = None
@@ -214,6 +220,7 @@ class MixedStackHooks(ProxyHooks):
                         body,
                     ),
                 )
+                self._live_lease_manager = LiveLeaseManager(registry_path)
             if self._child_only_mode:
                 self._child_only_process = self._start_child_only_parent(
                     arguments,
@@ -377,6 +384,9 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         del request, context
+        live_manager = self._live_lease_manager
+        if live_manager is not None and live_manager.has_lease():
+            return LocalResponse(body={"threads": live_manager.threads()})
         python_manager = self._python_manager
         if python_manager is not None and python_manager.has_python_stop():
             return LocalResponse(body={"threads": python_manager.threads()})
@@ -390,6 +400,27 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         thread_id = (request.get("arguments") or {}).get("threadId")
+        live_manager = self._live_lease_manager
+        if live_manager is not None and live_manager.owns_thread(thread_id):
+            assert isinstance(thread_id, int)
+            process_id = live_manager.process_for_thread(thread_id)
+            if process_id is None:
+                return LocalResponse(
+                    success=False,
+                    message="live Python lease lost its process identity",
+                )
+            try:
+                live_manager.release(process_id)
+            except LiveLeaseTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            body = {
+                "threadId": thread_id,
+                "systemProcessId": process_id,
+                "allThreadsContinued": False,
+            }
+            context.state.on_continued({"body": body}, owner="python")
+            context.send_event("continued", body)
+            return LocalResponse(body={"allThreadsContinued": False})
         python_manager = self._python_manager
         if python_manager is not None and python_manager.owns_thread(thread_id):
             assert isinstance(thread_id, int)
@@ -457,6 +488,49 @@ class MixedStackHooks(ProxyHooks):
         with self._lock:
             selected_frame_id = self._console_frame_id
             selected_native = self._native_lease_frames.get(selected_frame_id)
+        live_manager = self._live_lease_manager
+        if live_manager is not None and live_manager.owns_thread(thread_id):
+            if (
+                not isinstance(selected_frame_id, int)
+                or not live_manager.owns_frame(selected_frame_id)
+            ):
+                return LocalResponse(
+                    success=False,
+                    message="select a live Python frame before stepping",
+                )
+            try:
+                process_id, native_thread_id, generation = (
+                    live_manager.begin_step(
+                        selected_frame_id,
+                        str(request.get("command")),
+                    )
+                )
+            except LiveLeaseTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            continued_body = {
+                "threadId": native_thread_id,
+                "systemProcessId": process_id,
+                "allThreadsContinued": False,
+            }
+            context.state.on_continued(
+                {"body": continued_body},
+                owner="python",
+            )
+            Thread(
+                target=self._finish_live_lease_step,
+                args=(
+                    live_manager,
+                    process_id,
+                    native_thread_id,
+                    generation,
+                    str(request.get("command")),
+                    continued_body,
+                    context,
+                ),
+                name=f"pyrust-live-python-step-{process_id}",
+                daemon=True,
+            ).start()
+            return LocalResponse(body={})
         if (
             selected_native is not None
             and thread_id == selected_native.python_thread_id
@@ -687,6 +761,17 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         reference = (request.get("arguments") or {}).get("variablesReference")
+        live_manager = self._live_lease_manager
+        if live_manager is not None and live_manager.owns_variable(reference):
+            assert isinstance(reference, int)
+            try:
+                body = live_manager.set_variable(
+                    reference,
+                    request.get("arguments") or {},
+                )
+            except LiveLeaseTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=body)
         python_manager = self._python_manager
         if (
             python_manager is not None
@@ -737,6 +822,17 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         frame_id = (request.get("arguments") or {}).get("frameId")
+        live_manager = self._live_lease_manager
+        if live_manager is not None and live_manager.owns_frame(frame_id):
+            assert isinstance(frame_id, int)
+            try:
+                body = live_manager.set_expression(
+                    frame_id,
+                    request.get("arguments") or {},
+                )
+            except LiveLeaseTransportError as error:
+                return LocalResponse(success=False, message=str(error))
+            return LocalResponse(body=body)
         native_lease = (
             self._native_lease_frames.get(frame_id)
             if isinstance(frame_id, int)
@@ -793,6 +889,21 @@ class MixedStackHooks(ProxyHooks):
                         "on the refreshed live frame"
                     ),
                 )
+            if (
+                handoff is None
+                and isinstance(frame_id, int)
+                and live_manager is not None
+                and live_manager.owns_frame(frame_id)
+            ):
+                try:
+                    return LocalResponse(
+                        body=live_manager.set_expression(
+                            frame_id,
+                            request.get("arguments") or {},
+                        )
+                    )
+                except LiveLeaseTransportError as error:
+                    return LocalResponse(success=False, message=str(error))
             return handoff
         return None
 
@@ -845,6 +956,14 @@ class MixedStackHooks(ProxyHooks):
         if isinstance(frame_id, int) and not isinstance(frame_id, bool):
             with self._lock:
                 self._console_frame_id = frame_id
+        live_manager = self._live_lease_manager
+        if isinstance(frame_id, int) and live_manager is not None:
+            self._bind_live_lease_frame(frame_id, context)
+            if live_manager.owns_frame(frame_id):
+                try:
+                    return LocalResponse(body=live_manager.scopes(frame_id))
+                except LiveLeaseTransportError as error:
+                    return LocalResponse(success=False, message=str(error))
         native_lease = (
             self._native_lease_frames.get(frame_id)
             if isinstance(frame_id, int)
@@ -900,6 +1019,11 @@ class MixedStackHooks(ProxyHooks):
         handoff = self._handoff_snapshot_to_debugpy(frame_id, context)
         if handoff is not None:
             return handoff
+        if live_manager is not None and live_manager.owns_frame(frame_id):
+            try:
+                return LocalResponse(body=live_manager.scopes(frame_id))
+            except LiveLeaseTransportError as error:
+                return LocalResponse(success=False, message=str(error))
         locals_snapshot = frame.get("locals")
         if not isinstance(locals_snapshot, dict):
             return LocalResponse(
@@ -937,6 +1061,12 @@ class MixedStackHooks(ProxyHooks):
         reference = (request.get("arguments") or {}).get("variablesReference")
         if not isinstance(reference, int):
             return None
+        live_manager = self._live_lease_manager
+        if live_manager is not None and live_manager.owns_variable(reference):
+            try:
+                return LocalResponse(body=live_manager.variables(reference))
+            except LiveLeaseTransportError as error:
+                return LocalResponse(success=False, message=str(error))
         python_manager = self._python_manager
         if (
             python_manager is not None
@@ -993,6 +1123,19 @@ class MixedStackHooks(ProxyHooks):
         context: ProxyContext,
     ) -> LocalResponse | None:
         frame_id = self._console_frame_id_for(request)
+        live_manager = self._live_lease_manager
+        if isinstance(frame_id, int) and live_manager is not None:
+            self._bind_live_lease_frame(frame_id, context)
+            if live_manager.owns_frame(frame_id):
+                try:
+                    return LocalResponse(
+                        body=live_manager.evaluate(
+                            frame_id,
+                            request.get("arguments") or {},
+                        )
+                    )
+                except LiveLeaseTransportError as error:
+                    return LocalResponse(success=False, message=str(error))
         native_lease = (
             self._native_lease_frames.get(frame_id)
             if isinstance(frame_id, int)
@@ -1048,6 +1191,16 @@ class MixedStackHooks(ProxyHooks):
         handoff = self._handoff_snapshot_to_debugpy(frame_id, context)
         if handoff is not None:
             return handoff
+        if live_manager is not None and live_manager.owns_frame(frame_id):
+            try:
+                return LocalResponse(
+                    body=live_manager.evaluate(
+                        frame_id,
+                        request.get("arguments") or {},
+                    )
+                )
+            except LiveLeaseTransportError as error:
+                return LocalResponse(success=False, message=str(error))
         locals_snapshot = frame.get("locals")
         if not isinstance(locals_snapshot, dict):
             return LocalResponse(
@@ -1093,6 +1246,13 @@ class MixedStackHooks(ProxyHooks):
                 success=False,
                 message="stackTrace requires a positive threadId",
             )
+
+        live_manager = self._live_lease_manager
+        if live_manager is not None and live_manager.owns_thread(thread_id):
+            try:
+                return LocalResponse(body=live_manager.stack_trace(thread_id))
+            except LiveLeaseTransportError as error:
+                return LocalResponse(success=False, message=str(error))
 
         manager = self._process_manager
         python_manager = self._python_manager
@@ -1648,6 +1808,8 @@ class MixedStackHooks(ProxyHooks):
             self._process_manager = None
             python_manager = self._python_manager
             self._python_manager = None
+            live_lease_manager = self._live_lease_manager
+            self._live_lease_manager = None
             python_debug_registry = self._python_debug_registry
             self._python_debug_registry = None
             child_only_process = self._child_only_process
@@ -1657,6 +1819,8 @@ class MixedStackHooks(ProxyHooks):
             manager.close()
         if python_manager is not None:
             python_manager.close()
+        if live_lease_manager is not None:
+            live_lease_manager.close()
         if python_debug_registry is not None:
             python_debug_registry.cleanup()
         if child_only_process is not None:
@@ -1888,6 +2052,50 @@ class MixedStackHooks(ProxyHooks):
                 raise PythonTransportError(
                     "Python frame has no function name for debugpy handoff"
                 )
+            live_manager = self._live_lease_manager
+            if (
+                live_manager is not None
+                and live_manager.is_secondary_frame(
+                    synthetic.process_id,
+                    synthetic.thread_id,
+                    name=name,
+                    path=path,
+                )
+            ):
+                live_manager.arm(
+                    synthetic.process_id,
+                    synthetic.thread_id,
+                    frame_id=frame_id,
+                    name=name,
+                    path=path,
+                    resume_native=lambda: self._resume_native_for_live_lease(
+                        synthetic.process_id,
+                        synthetic.thread_id,
+                        context,
+                    ),
+                )
+                with self._lock:
+                    self._python_handoffs.discard(key)
+                stopped_body = {
+                    "reason": "pause",
+                    "description": (
+                        "Secondary-interpreter Python frame is live"
+                    ),
+                    "threadId": synthetic.thread_id,
+                    "systemProcessId": synthetic.process_id,
+                    "allThreadsStopped": False,
+                }
+                context.state.on_stopped(
+                    {"body": stopped_body},
+                    owner="python",
+                )
+                context.send_event("stopped", stopped_body)
+                context.send_output(
+                    "PyRust transferred the selected secondary-interpreter "
+                    "frame to its interpreter-local live engine.\n",
+                    category="console",
+                )
+                return LocalResponse(body={"scopes": []})
             manager.arm_targeted_handoff(
                 synthetic.process_id,
                 native_thread_id=synthetic.thread_id,
@@ -1937,6 +2145,90 @@ class MixedStackHooks(ProxyHooks):
                 message=f"could not hand Python frame to debugpy: {error}",
             )
         return LocalResponse(body={"scopes": []})
+
+    def _bind_live_lease_frame(
+        self,
+        frame_id: int,
+        context: ProxyContext,
+    ) -> None:
+        manager = self._live_lease_manager
+        synthetic = context.synthetic_frames.get(frame_id)
+        if (
+            manager is None
+            or synthetic is None
+            or synthetic.process_id is None
+            or not isinstance(synthetic.value, dict)
+        ):
+            return
+        name = synthetic.value.get("name")
+        path = synthetic.value.get("path")
+        if isinstance(name, str) and isinstance(path, str):
+            try:
+                manager.bind_frame(
+                    frame_id,
+                    process_id=synthetic.process_id,
+                    name=name,
+                    path=path,
+                )
+            except LiveLeaseTransportError:
+                pass
+
+    def _resume_native_for_live_lease(
+        self,
+        process_id: int,
+        thread_id: int,
+        context: ProxyContext,
+    ) -> None:
+        continued = Event()
+        with self._lock:
+            self._native_suppress_continued[process_id] = continued
+        manager = self._process_manager
+        if manager is not None and manager.owns_thread(thread_id):
+            manager.continue_thread(thread_id, single_thread=True)
+        else:
+            response = context.request_downstream(
+                "continue",
+                {"threadId": thread_id, "singleThread": True},
+                timeout=10,
+            )
+            if response.get("success") is not True:
+                raise LiveLeaseTransportError(
+                    str(response.get("message", "native lease continue failed"))
+                )
+        if not continued.wait(5):
+            with self._lock:
+                self._native_suppress_continued.pop(process_id, None)
+
+    @staticmethod
+    def _finish_live_lease_step(
+        manager: LiveLeaseManager,
+        process_id: int,
+        thread_id: int,
+        generation: int,
+        command: str,
+        continued_body: Mapping[str, Any],
+        context: ProxyContext,
+    ) -> None:
+        # Let the step response reach VS Code before lifecycle events.
+        time.sleep(0.01)
+        context.send_event("continued", continued_body)
+        try:
+            manager.finish_step(process_id, generation)
+        except LiveLeaseTransportError as error:
+            context.send_output(
+                f"PyRust live Python {command} failed: {error}\n",
+                category="stderr",
+            )
+            return
+        stopped_body = {
+            "reason": "step",
+            "description": f"Secondary-interpreter Python {command}",
+            "threadId": thread_id,
+            "systemProcessId": process_id,
+            "allThreadsStopped": False,
+        }
+        context.state.on_stopped({"body": stopped_body}, owner="python")
+        context.send_event("stopped", stopped_body)
 
     def _capture_native_lease_frames(
         self,
